@@ -32,8 +32,12 @@ classifiers = [
 ]
 
 
-[tool.setuptools]
-packages = ["thesis"]
+[tool.setuptools.packages.find]
+# This tells setuptools to find all packages (directories with __init__.py)
+# in the current directory ('.').
+where = ["."] 
+# This tells it to include 'thesis' and any subpackages like 'thesis.models'
+include = ["thesis*"]
 
 [tool.setuptools.dynamic]
 version = { attr = "thesis.__version__" }
