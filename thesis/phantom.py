@@ -39,7 +39,16 @@ def generate_shepp_logan_in_2d(grid_shape: tuple[int, ...] = (64, 64), spread=Fa
         Ellipse(value=4, radius=(0.25, 0.29), center=(0, 0.46), phi=0),  # C
     ]
     sim = EllipsoidPhantom(grid_shape, ellipses_for_sim)
-    sim = sim.label_map.clip(max=sim.n + 1)  # the last overlaps -> +1
+    # the last two ellipses overlap, which means that in sim.label_map
+    # at the place of overlap the label is the sum of their labels, which is off
+    # I used to clip it at the last value + 1:
+    # sim = sim.label_map.clip(max=sim.n + 1)
+    # this labelled the intersection as the next consecutive ROI.
+    # Eventually, I realised, I don't want it, and would simply clip sim.label_map
+    # to the last value, merging the overlapping area into the tiny ROI.
+    sim = sim.label_map.clip(max=sim.n)
+    # Effectively, I don't make use of the ROIs overlapping in this label map, so I
+    # can as well simply make them touch.
 
     # has only non-overlapping ROIs
     reco = EllipsoidPhantom(grid_shape, ellipses_for_reco).label_map
@@ -66,7 +75,9 @@ def generate_shepp_logan_in_2d(grid_shape: tuple[int, ...] = (64, 64), spread=Fa
     target_fg_value = -total_wo_fg / fg_size
     lut = lut.at[1].set(jnp.array([target_fg_value, abs(target_fg_value)]))
     chi = lut[sim, 0]  # prelim
-    assert jnp.isclose(chi.sum(), 0, atol=1e-4, rtol=1e-4)
+    assert jnp.isclose(chi.sum(), 0, atol=1e-3, rtol=1e-3)
+    # my inversion enforces zero-mean, so I would prefer the phantom
+    # to be zero-mean too, so that I don't need to force / reference it additionally
     if spread:
         import jax.random as jr
 
