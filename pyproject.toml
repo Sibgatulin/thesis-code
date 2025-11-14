@@ -18,6 +18,7 @@ dependencies = [
   "matplotlib>=3.9.3",
   "numpyro>=0.16.1",
   "arviz>=0.20.0",
+  "yaslp @ git+https://github.com/MedPhysJena/yaslp.git#egg=v0.2.0",
 ]
 classifiers = [
   "Intended Audience :: Developers",
