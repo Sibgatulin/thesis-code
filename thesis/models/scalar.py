@@ -19,9 +19,8 @@ def model_unpooled(
 ):
     obs_scale = numpyro.sample(
         "obs_scale",
-        dist.TruncatedNormal(
-            **prior.get("obs_scale", {"loc": 5e-3, "scale": 5e-3}),
-            low=0.0,
+        dist.InverseGamma(
+            **prior.get("obs_scale", {"concentration": 3, "rate": 5e-3}),
         ),
     )
     with numpyro.plate_stack("spatial", grid_shape):
