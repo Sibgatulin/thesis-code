@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "thesis"
+readme = "README.md"
+license = { text = "Apache License, Version 2.0" }
+dynamic = ["version"]
+description = "Code used to generate results in my PhD"
+authors = [{ name = "Renat Sibgatulin", email = "sibgatulin@tuta.io" }]
+requires-python = ">=3.10" # because jax
+dependencies = [
+  "jax",
+  "jaxtyping",
+  "jupyter>=1.1.1",
+  "jupyterlab>=4.3.2",
+  "matplotlib>=3.9.3",
+  "numpyro>=0.16.1",
+  "arviz>=0.20.0",
+]
+classifiers = [
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+
+[tool.setuptools]
+packages = ["thesis"]
+
+[tool.setuptools.dynamic]
+version = { attr = "thesis.__version__" }
+
+[tool.ruff.lint]
+ignore = ["F722"]
