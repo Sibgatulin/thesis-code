@@ -13,8 +13,6 @@ requires-python = ">=3.10" # because jax
 dependencies = [
   "jax",
   "jaxtyping",
-  "jupyter>=1.1.1",
-  "jupyterlab>=4.3.2",
   "matplotlib>=3.9.3",
   "numpyro>=0.16.1",
   "arviz>=0.20.0",
