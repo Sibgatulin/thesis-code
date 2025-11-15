@@ -281,3 +281,87 @@ def model_rft_log_unpooled(
         obs_loc = numpyro.deterministic("field", field)
         with handlers.mask(mask=mask_fg):
             numpyro.sample("obs", dist.Normal(obs_loc, jnp.sqrt(obs_var)), obs=obs)
+
+
+def model_rft_log_pooled_decentred(
+    grid_shape: tuple[int, ...],
+    kernel_rft: Float[Array, " *rft"],
+    roi: Int[Array, " *spatial"],
+    nroi: int,
+    mask_fg: Bool[Array, " *spatial"] = jnp.array(True),
+    prior={},
+    obs: Float[Array, " *spatial"] | None = None,
+    ft_norm="backward",
+):
+    # This model is refactored to be decentred, and works VERY well
+    # See https://gemini.google.com/share/6b03e6d86dbf
+    ndim = len(grid_shape)
+    ft_axes = tuple(range(-ndim, 0))
+    rft_shape = kernel_rft.shape
+
+    obs_var = numpyro.sample(
+        "obs_var",
+        dist.InverseGamma(
+            **prior.get("obs_var", {"concentration": 3, "rate": 5e-3**2}),
+        ),
+    )
+
+    with numpyro.plate("roi", nroi):
+        loc = numpyro.sample(
+            "chi_loc", dist.Normal(**prior.get("chi_loc", {"loc": 0, "scale": 5e-2}))
+        )
+        var = numpyro.sample(
+            "chi_var",
+            dist.InverseGamma(
+                **prior.get("chi_var", {"concentration": 1, "rate": 5e-4})
+            ),
+        )
+    with numpyro.plate_stack("spatial", grid_shape):
+        x_raw = numpyro.sample("chi_raw", dist.Normal(0.0, 1.0))
+
+    # 2. Define `chi` deterministically using the non-centered trick.
+    # This `chi` is the same as the original `x`.
+    # This step breaks the funnel between `chi` and its hyperparameters.
+    x = numpyro.deterministic("chi", loc[roi] + jnp.sqrt(var)[roi] * x_raw)
+
+    # 3. Compute the Fourier transform of our new `chi`
+    x_ft = numpyro.deterministic(
+        "chi_ft", jnp.fft.rfftn(x, axes=ft_axes, norm=ft_norm).at[(0,) * ndim].set(0.0)
+    )
+    # 4. Compute the log-abs and angle from `chi_ft`
+    # We add a small epsilon for numerical stability, to avoid log(0)
+    eps = jnp.finfo(x_ft.dtype).eps
+    x_ft_abs = jnp.abs(x_ft)
+    x_ft_log_abs = jnp.log(x_ft_abs + eps)
+    x_ft_arg = jnp.angle(x_ft)
+
+    # 5. Apply the *original* Fourier priors as "factors"
+    # Instead of sampling from them, we "observe" our computed values.
+    # This now constrains `chi_raw` (our base latent) to follow
+    # the Fourier-space statistics.
+    with numpyro.plate_stack("rft", rft_shape):
+        # Create a mask to handle the DC component
+        # The original model zeroed the DC component *after* sampling,
+        # so we will *not* apply the prior at the DC index.
+        dc_mask = jnp.ones(rft_shape, dtype=bool).at[(0,) * ndim].set(False)
+
+        with handlers.mask(mask=dc_mask):
+            _prior_ft_abs = prior.get("_ft_log_abs", {"loc": 0.0, "scale": 1.0})
+            numpyro.sample(
+                "_chi_ft_log_abs",
+                dist.Normal(_prior_ft_abs["loc"], _prior_ft_abs["scale"]),
+                obs=x_ft_log_abs,
+            )
+            x_ft_arg = numpyro.sample(
+                "_ft_arg",
+                dist.Uniform(low=-jnp.pi, high=jnp.pi),
+                obs=x_ft_arg,
+            )
+
+    with numpyro.plate_stack("spatial", grid_shape):
+        # numpyro.deterministic("chi", jnp.fft.irfftn(x_ft, axes=ft_axes, norm=ft_norm))
+        obs_loc = numpyro.deterministic(
+            "field", jnp.fft.irfftn(kernel_rft * x_ft, axes=ft_axes, norm=ft_norm)
+        )
+        with handlers.mask(mask=mask_fg):
+            numpyro.sample("obs", dist.Normal(obs_loc, jnp.sqrt(obs_var)), obs=obs)
