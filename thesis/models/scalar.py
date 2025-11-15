@@ -134,6 +134,41 @@ def model_pooled_decentred_marginalised(
             )
 
 
+def model_pooled_fully_marginalised(
+    grid_shape: tuple[int, ...],
+    kernel_rft: Float[Array, " *rft"],
+    roi: Int[Array, " *spatial"],
+    nroi: int,
+    mask_fg: Bool[Array, " *spatial"] = jnp.array(True),
+    prior={},
+    obs: Float[Array, " *spatial"] | None = None,
+):
+    """Dencentred parametrisation of a hierarchical model with ROI-variance marginalised."""
+    prior_obs_var = prior.get("obs_var", {"concentration": 3, "rate": 5e-3**2})
+    obs_df = 2 * prior_obs_var["concentration"]
+    obs_var = prior_obs_var["rate"] / prior_obs_var["concentration"]
+
+    prior_chi_var = prior.get("chi_var", {"concentration": 1, "rate": 5e-4})
+    chi_df = 2 * prior_chi_var["concentration"]
+    chi_var = prior_chi_var["rate"] / prior_chi_var["concentration"]
+
+    with numpyro.plate("roi", nroi):
+        loc = numpyro.sample(
+            "chi_loc", dist.Normal(**prior.get("chi_loc", {"loc": 0, "scale": 5e-2}))
+        )
+
+    with numpyro.plate_stack("spatial", grid_shape):
+        x_eps = numpyro.sample("chi_eps", dist.StudentT(chi_df, 0, 1))
+        x = numpyro.deterministic("chi", loc[roi] + jnp.sqrt(chi_var) * x_eps)
+        obs_loc = numpyro.deterministic(
+            "field", simulate_field_from_scalar_and_kernel(kernel_rft, x)
+        )
+        with handlers.mask(mask=mask_fg):
+            numpyro.sample(
+                "obs", dist.StudentT(obs_df, obs_loc, jnp.sqrt(obs_var)), obs=obs
+            )
+
+
 def model_pooled_centred(
     grid_shape: tuple[int, ...],
     kernel_rft: Float[Array, " *rft"],
