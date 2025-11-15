@@ -115,16 +115,16 @@ def model_pooled_decentred_marginalised(
         loc = numpyro.sample(
             "chi_loc", dist.Normal(**prior.get("chi_loc", {"loc": 0, "scale": 5e-2}))
         )
-        scale = numpyro.sample(
-            "chi_scale",
-            dist.TruncatedNormal(
-                **prior.get("chi_scale", {"loc": 2e-2, "scale": 5e-2}), low=0.0
+        var = numpyro.sample(
+            "chi_var",
+            dist.InverseGamma(
+                **prior.get("chi_var", {"concentration": 1, "rate": 5e-4})
             ),
         )
 
     with numpyro.plate_stack("spatial", grid_shape):
         x_eps = numpyro.sample("chi_eps", dist.Normal(0, 1))
-        x = numpyro.deterministic("chi", loc[roi] + scale[roi] * x_eps)
+        x = numpyro.deterministic("chi", loc[roi] + jnp.sqrt(var)[roi] * x_eps)
         obs_loc = numpyro.deterministic(
             "field", simulate_field_from_scalar_and_kernel(kernel_rft, x)
         )
@@ -154,15 +154,15 @@ def model_pooled_centred(
         loc = numpyro.sample(
             "chi_loc", dist.Normal(**prior.get("chi_loc", {"loc": 0, "scale": 5e-2}))
         )
-        scale = numpyro.sample(
+        var = numpyro.sample(
             "chi_scale",
-            dist.TruncatedNormal(
-                **prior.get("chi_scale", {"loc": 2e-2, "scale": 5e-2}), low=0.0
+            dist.InverseGamma(
+                **prior.get("chi_var", {"concentration": 1, "rate": 5e-4})
             ),
         )
 
     with numpyro.plate_stack("spatial", grid_shape):
-        x = numpyro.sample("chi", dist.Normal(loc[roi], scale[roi]))
+        x = numpyro.sample("chi", dist.Normal(loc[roi], jnp.sqrt(var)[roi]))
         obs_loc = numpyro.deterministic(
             "field", simulate_field_from_scalar_and_kernel(kernel_rft, x)
         )
@@ -187,15 +187,15 @@ def model_pooled_centred_marginalised(
         loc = numpyro.sample(
             "chi_loc", dist.Normal(**prior.get("chi_loc", {"loc": 0, "scale": 5e-2}))
         )
-        scale = numpyro.sample(
+        var = numpyro.sample(
             "chi_scale",
-            dist.TruncatedNormal(
-                **prior.get("chi_scale", {"loc": 2e-2, "scale": 5e-2}), low=0.0
+            dist.InverseGamma(
+                **prior.get("chi_var", {"concentration": 1, "rate": 5e-4})
             ),
         )
 
     with numpyro.plate_stack("spatial", grid_shape):
-        x = numpyro.sample("chi", dist.Normal(loc[roi], scale[roi]))
+        x = numpyro.sample("chi", dist.Normal(loc[roi], jnp.sqrt(var)[roi]))
         obs_loc = numpyro.deterministic(
             "field", simulate_field_from_scalar_and_kernel(kernel_rft, x)
         )
