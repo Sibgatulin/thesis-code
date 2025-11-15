@@ -18,10 +18,10 @@ def model_unpooled(
     obs: Float[Array, " *spatial"] | None = None,
 ):
     """Simplest QSM model."""
-    obs_scale = numpyro.sample(
-        "obs_scale",
+    obs_var = numpyro.sample(
+        "obs_var",
         dist.InverseGamma(
-            **prior.get("obs_scale", {"concentration": 3, "rate": 5e-3}),
+            **prior.get("obs_var", {"concentration": 3, "rate": 5e-3**2}),
         ),
     )
     with numpyro.plate_stack("spatial", grid_shape):
@@ -32,7 +32,7 @@ def model_unpooled(
             "field", simulate_field_from_scalar_and_kernel(kernel_rft, x)
         )
         with handlers.mask(mask=mask_fg):
-            numpyro.sample("obs", dist.Normal(obs_loc, obs_scale), obs=obs)
+            numpyro.sample("obs", dist.Normal(obs_loc, jnp.sqrt(obs_var)), obs=obs)
 
 
 def model_unpooled_marginalised(
@@ -44,9 +44,9 @@ def model_unpooled_marginalised(
 ):
     """Simplest QSM model with the noise STD marginalised out."""
 
-    prior_obs_scale = prior.get("obs_scale", {"concentration": 3, "rate": 5e-3})
-    obs_df = 2 * prior_obs_scale["concentration"]
-    obs_scale = prior_obs_scale["rate"] / prior_obs_scale["concentration"]
+    prior_obs_var = prior.get("obs_var", {"concentration": 3, "rate": 5e-3**2})
+    obs_df = 2 * prior_obs_var["concentration"]
+    obs_var = prior_obs_var["rate"] / prior_obs_var["concentration"]
 
     with numpyro.plate_stack("spatial", grid_shape):
         x = numpyro.sample(
@@ -56,7 +56,9 @@ def model_unpooled_marginalised(
             "field", simulate_field_from_scalar_and_kernel(kernel_rft, x)
         )
         with handlers.mask(mask=mask_fg):
-            numpyro.sample("obs", dist.StudentT(obs_df, obs_loc, obs_scale), obs=obs)
+            numpyro.sample(
+                "obs", dist.StudentT(obs_df, obs_loc, jnp.sqrt(obs_var)), obs=obs
+            )
 
 
 def model_pooled_decentred(
@@ -68,10 +70,10 @@ def model_pooled_decentred(
     prior={},
     obs: Float[Array, " *spatial"] | None = None,
 ):
-    obs_scale = numpyro.sample(
-        "obs_scale",
+    obs_var = numpyro.sample(
+        "obs_var",
         dist.InverseGamma(
-            **prior.get("obs_scale", {"concentration": 3, "rate": 5e-3}),
+            **prior.get("obs_var", {"concentration": 3, "rate": 5e-3**2}),
         ),
     )
 
@@ -93,7 +95,7 @@ def model_pooled_decentred(
             "field", simulate_field_from_scalar_and_kernel(kernel_rft, x)
         )
         with handlers.mask(mask=mask_fg):
-            numpyro.sample("obs", dist.Normal(obs_loc, obs_scale), obs=obs)
+            numpyro.sample("obs", dist.Normal(obs_loc, jnp.sqrt(obs_var)), obs=obs)
 
 
 def model_pooled_decentred_marginalised(
@@ -105,9 +107,9 @@ def model_pooled_decentred_marginalised(
     prior={},
     obs: Float[Array, " *spatial"] | None = None,
 ):
-    prior_obs_scale = prior.get("obs_scale", {"concentration": 3, "rate": 5e-3})
-    obs_df = 2 * prior_obs_scale["concentration"]
-    obs_scale = prior_obs_scale["rate"] / prior_obs_scale["concentration"]
+    prior_obs_var = prior.get("obs_var", {"concentration": 3, "rate": 5e-3**2})
+    obs_df = 2 * prior_obs_var["concentration"]
+    obs_var = prior_obs_var["rate"] / prior_obs_var["concentration"]
 
     with numpyro.plate("roi", nroi):
         loc = numpyro.sample(
@@ -127,7 +129,9 @@ def model_pooled_decentred_marginalised(
             "field", simulate_field_from_scalar_and_kernel(kernel_rft, x)
         )
         with handlers.mask(mask=mask_fg):
-            numpyro.sample("obs", dist.StudentT(obs_df, obs_loc, obs_scale), obs=obs)
+            numpyro.sample(
+                "obs", dist.StudentT(obs_df, obs_loc, jnp.sqrt(obs_var)), obs=obs
+            )
 
 
 def model_pooled_centred(
@@ -139,10 +143,10 @@ def model_pooled_centred(
     prior={},
     obs: Float[Array, " *spatial"] | None = None,
 ):
-    obs_scale = numpyro.sample(
-        "obs_scale",
+    obs_var = numpyro.sample(
+        "obs_var",
         dist.InverseGamma(
-            **prior.get("obs_scale", {"concentration": 3, "rate": 5e-3}),
+            **prior.get("obs_var", {"concentration": 3, "rate": 5e-3**2}),
         ),
     )
 
@@ -163,7 +167,7 @@ def model_pooled_centred(
             "field", simulate_field_from_scalar_and_kernel(kernel_rft, x)
         )
         with handlers.mask(mask=mask_fg):
-            numpyro.sample("obs", dist.Normal(obs_loc, obs_scale), obs=obs)
+            numpyro.sample("obs", dist.Normal(obs_loc, jnp.sqrt(obs_var)), obs=obs)
 
 
 def model_pooled_centred_marginalised(
@@ -175,9 +179,9 @@ def model_pooled_centred_marginalised(
     prior={},
     obs: Float[Array, " *spatial"] | None = None,
 ):
-    prior_obs_scale = prior.get("obs_scale", {"concentration": 3, "rate": 5e-3})
-    obs_df = 2 * prior_obs_scale["concentration"]
-    obs_scale = prior_obs_scale["rate"] / prior_obs_scale["concentration"]
+    prior_obs_var = prior.get("obs_var", {"concentration": 3, "rate": 5e-3**2})
+    obs_df = 2 * prior_obs_var["concentration"]
+    obs_var = prior_obs_var["rate"] / prior_obs_var["concentration"]
 
     with numpyro.plate("roi", nroi):
         loc = numpyro.sample(
@@ -196,4 +200,6 @@ def model_pooled_centred_marginalised(
             "field", simulate_field_from_scalar_and_kernel(kernel_rft, x)
         )
         with handlers.mask(mask=mask_fg):
-            numpyro.sample("obs", dist.StudentT(obs_df, obs_loc, obs_scale), obs=obs)
+            numpyro.sample(
+                "obs", dist.StudentT(obs_df, obs_loc, jnp.sqrt(obs_var)), obs=obs
+            )
