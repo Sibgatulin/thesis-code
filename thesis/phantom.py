@@ -88,4 +88,9 @@ def generate_shepp_logan_in_2d(
 
         chi = chi + lut[sim, 1] * jr.normal(jr.PRNGKey(0), shape=grid_shape)
 
-    return sim, reco, chi, lut
+    luts = {
+        "chi_loc": lut[:, 0],
+        "chi_spread": lut[:, 1],
+        "obs_scale": 0.3 * lut[:, 1].at[-1].set(lut[-1, 1] * 7),
+    }
+    return sim, reco, chi, luts
