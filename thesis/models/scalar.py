@@ -9,6 +9,15 @@ from numpyro import handlers
 
 from thesis.forward import simulate_field_from_scalar_and_kernel
 
+DEFAULT_PRIOR = {
+    "obs_var": {"concentration": 3, "rate": 100},
+    "chi": {"loc": 0, "scale": 50},
+    "chi_loc": {"loc": 0, "scale": 50},
+    "chi_scale": {"loc": 20, "scale": 50},
+    "chi_var": {"loc": 3, "scale": 100},  # NOTE: not the same as before (1, 5e-4)
+    "_ft_log_abs": {"loc": 0.0, "scale": 1.0},
+}
+
 
 def model_unpooled(
     grid_shape: tuple[int, ...],
@@ -20,14 +29,10 @@ def model_unpooled(
     """Simplest QSM model."""
     obs_var = numpyro.sample(
         "obs_var",
-        dist.InverseGamma(
-            **prior.get("obs_var", {"concentration": 3, "rate": 5e-3**2}),
-        ),
+        dist.InverseGamma(**prior.get("obs_var", DEFAULT_PRIOR["obs_var"])),
     )
     with numpyro.plate_stack("spatial", grid_shape):
-        x = numpyro.sample(
-            "chi", dist.Normal(**prior.get("chi", {"loc": 0, "scale": 1e-2}))
-        )
+        x = numpyro.sample("chi", dist.Normal(**prior.get("chi", DEFAULT_PRIOR["chi"])))
         obs_loc = numpyro.deterministic(
             "field", simulate_field_from_scalar_and_kernel(kernel_rft, x)
         )
@@ -44,14 +49,12 @@ def model_unpooled_marginalised(
 ):
     """Simplest QSM model with the noise STD marginalised out."""
 
-    prior_obs_var = prior.get("obs_var", {"concentration": 3, "rate": 5e-3**2})
+    prior_obs_var = prior.get("obs_var", DEFAULT_PRIOR["obs_var"])
     obs_df = 2 * prior_obs_var["concentration"]
     obs_var = prior_obs_var["rate"] / prior_obs_var["concentration"]
 
     with numpyro.plate_stack("spatial", grid_shape):
-        x = numpyro.sample(
-            "chi", dist.Normal(**prior.get("chi", {"loc": 0, "scale": 1e-2}))
-        )
+        x = numpyro.sample("chi", dist.Normal(**prior.get("chi", DEFAULT_PRIOR["chi"])))
         obs_loc = numpyro.deterministic(
             "field", simulate_field_from_scalar_and_kernel(kernel_rft, x)
         )
@@ -73,18 +76,18 @@ def model_pooled_decentred(
     obs_var = numpyro.sample(
         "obs_var",
         dist.InverseGamma(
-            **prior.get("obs_var", {"concentration": 3, "rate": 5e-3**2}),
+            **prior.get("obs_var", DEFAULT_PRIOR["obs_var"]),
         ),
     )
 
     with numpyro.plate("roi", nroi):
         loc = numpyro.sample(
-            "chi_loc", dist.Normal(**prior.get("chi_loc", {"loc": 0, "scale": 5e-2}))
+            "chi_loc", dist.Normal(**prior.get("chi_loc", DEFAULT_PRIOR["chi_loc"]))
         )
         scale = numpyro.sample(
             "chi_scale",
-            dist.TruncatedNormal(
-                **prior.get("chi_scale", {"loc": 2e-2, "scale": 5e-2}), low=0.0
+            dist.TruncatedNormal(  # TODO: consider switching over to InvGamma
+                **prior.get("chi_scale", DEFAULT_PRIOR["chi_scale"]), low=0.0
             ),
         )
 
@@ -107,19 +110,17 @@ def model_pooled_decentred_marginalised(
     prior={},
     obs: Float[Array, " *spatial"] | None = None,
 ):
-    prior_obs_var = prior.get("obs_var", {"concentration": 3, "rate": 5e-3**2})
+    prior_obs_var = prior.get("obs_var", DEFAULT_PRIOR["obs_var"])
     obs_df = 2 * prior_obs_var["concentration"]
     obs_var = prior_obs_var["rate"] / prior_obs_var["concentration"]
 
     with numpyro.plate("roi", nroi):
         loc = numpyro.sample(
-            "chi_loc", dist.Normal(**prior.get("chi_loc", {"loc": 0, "scale": 5e-2}))
+            "chi_loc", dist.Normal(**prior.get("chi_loc", DEFAULT_PRIOR["chi_loc"]))
         )
         var = numpyro.sample(
             "chi_var",
-            dist.InverseGamma(
-                **prior.get("chi_var", {"concentration": 1, "rate": 5e-4})
-            ),
+            dist.InverseGamma(**prior.get("chi_var", DEFAULT_PRIOR["chi_var"])),
         )
 
     with numpyro.plate_stack("spatial", grid_shape):
@@ -144,17 +145,17 @@ def model_pooled_fully_marginalised(
     obs: Float[Array, " *spatial"] | None = None,
 ):
     """Dencentred parametrisation of a hierarchical model with ROI-variance marginalised."""
-    prior_obs_var = prior.get("obs_var", {"concentration": 3, "rate": 5e-3**2})
+    prior_obs_var = prior.get("obs_var", DEFAULT_PRIOR["obs_var"])
     obs_df = 2 * prior_obs_var["concentration"]
     obs_var = prior_obs_var["rate"] / prior_obs_var["concentration"]
 
-    prior_chi_var = prior.get("chi_var", {"concentration": 1, "rate": 5e-4})
+    prior_chi_var = prior.get("chi_var", DEFAULT_PRIOR["chi_var"])
     chi_df = 2 * prior_chi_var["concentration"]
     chi_var = prior_chi_var["rate"] / prior_chi_var["concentration"]
 
     with numpyro.plate("roi", nroi):
         loc = numpyro.sample(
-            "chi_loc", dist.Normal(**prior.get("chi_loc", {"loc": 0, "scale": 5e-2}))
+            "chi_loc", dist.Normal(**prior.get("chi_loc", DEFAULT_PRIOR["chi_loc"]))
         )
 
     with numpyro.plate_stack("spatial", grid_shape):
@@ -181,19 +182,17 @@ def model_pooled_centred(
     obs_var = numpyro.sample(
         "obs_var",
         dist.InverseGamma(
-            **prior.get("obs_var", {"concentration": 3, "rate": 5e-3**2}),
+            **prior.get("obs_var", DEFAULT_PRIOR["obs_var"]),
         ),
     )
 
     with numpyro.plate("roi", nroi):
         loc = numpyro.sample(
-            "chi_loc", dist.Normal(**prior.get("chi_loc", {"loc": 0, "scale": 5e-2}))
+            "chi_loc", dist.Normal(**prior.get("chi_loc", DEFAULT_PRIOR["chi_loc"]))
         )
         var = numpyro.sample(
-            "chi_scale",
-            dist.InverseGamma(
-                **prior.get("chi_var", {"concentration": 1, "rate": 5e-4})
-            ),
+            "chi_var",
+            dist.InverseGamma(**prior.get("chi_var", DEFAULT_PRIOR["chi_var"])),
         )
 
     with numpyro.plate_stack("spatial", grid_shape):
@@ -214,19 +213,17 @@ def model_pooled_centred_marginalised(
     prior={},
     obs: Float[Array, " *spatial"] | None = None,
 ):
-    prior_obs_var = prior.get("obs_var", {"concentration": 3, "rate": 5e-3**2})
+    prior_obs_var = prior.get("obs_var", DEFAULT_PRIOR["obs_var"])
     obs_df = 2 * prior_obs_var["concentration"]
     obs_var = prior_obs_var["rate"] / prior_obs_var["concentration"]
 
     with numpyro.plate("roi", nroi):
         loc = numpyro.sample(
-            "chi_loc", dist.Normal(**prior.get("chi_loc", {"loc": 0, "scale": 5e-2}))
+            "chi_loc", dist.Normal(**prior.get("chi_loc", DEFAULT_PRIOR["chi_loc"]))
         )
         var = numpyro.sample(
             "chi_scale",
-            dist.InverseGamma(
-                **prior.get("chi_var", {"concentration": 1, "rate": 5e-4})
-            ),
+            dist.InverseGamma(**prior.get("chi_var", DEFAULT_PRIOR["chi_var"])),
         )
 
     with numpyro.plate_stack("spatial", grid_shape):
@@ -262,7 +259,7 @@ def model_rft_log_unpooled(
     obs_var = numpyro.sample(
         "obs_var",
         dist.InverseGamma(
-            **prior.get("obs_var", {"concentration": 3, "rate": 5e-3**2}),
+            **prior.get("obs_var", DEFAULT_PRIOR["obs_var"]),
         ),
     )
 
@@ -301,20 +298,16 @@ def model_rft_log_pooled_decentred(
 
     obs_var = numpyro.sample(
         "obs_var",
-        dist.InverseGamma(
-            **prior.get("obs_var", {"concentration": 3, "rate": 5e-3**2}),
-        ),
+        dist.InverseGamma(**prior.get("obs_var", DEFAULT_PRIOR["obs_var"])),
     )
 
     with numpyro.plate("roi", nroi):
         loc = numpyro.sample(
-            "chi_loc", dist.Normal(**prior.get("chi_loc", {"loc": 0, "scale": 5e-2}))
+            "chi_loc", dist.Normal(**prior.get("chi_loc", DEFAULT_PRIOR["chi_loc"]))
         )
         var = numpyro.sample(
             "chi_var",
-            dist.InverseGamma(
-                **prior.get("chi_var", {"concentration": 1, "rate": 5e-4})
-            ),
+            dist.InverseGamma(**prior.get("chi_var", DEFAULT_PRIOR["chi_var"])),
         )
     with numpyro.plate_stack("spatial", grid_shape):
         x_raw = numpyro.sample("chi_raw", dist.Normal(0.0, 1.0))
@@ -346,7 +339,7 @@ def model_rft_log_pooled_decentred(
         dc_mask = jnp.ones(rft_shape, dtype=bool).at[(0,) * ndim].set(False)
 
         with handlers.mask(mask=dc_mask):
-            _prior_ft_abs = prior.get("_ft_log_abs", {"loc": 0.0, "scale": 1.0})
+            _prior_ft_abs = prior.get("_ft_log_abs", DEFAULT_PRIOR["_ft_log_abs"])
             numpyro.sample(
                 "_chi_ft_log_abs",
                 dist.Normal(_prior_ft_abs["loc"], _prior_ft_abs["scale"]),

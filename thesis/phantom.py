@@ -14,7 +14,12 @@ LUT = {
 }
 
 
-def generate_shepp_logan_in_2d(grid_shape: tuple[int, ...] = (64, 64), spread=False):
+def generate_shepp_logan_in_2d(
+    grid_shape: tuple[int, ...] = (64, 64), spread=False, units="ppb"
+):
+    if units not in ["ppb", "ppm"]:
+        raise ValueError(f"units must be 'ppm' or 'ppb', got {units}")
+    _factor = {"ppm": 1, "ppb": 1e3}[units]
     ellipses_for_sim = [
         Ellipse(value=1, radius=(0.8, 0.9), center=(0, 0), phi=0),  # FG
         # The value of the following ellipses should be understood relative to the value
@@ -53,7 +58,7 @@ def generate_shepp_logan_in_2d(grid_shape: tuple[int, ...] = (64, 64), spread=Fa
     # has only non-overlapping ROIs
     reco = EllipsoidPhantom(grid_shape, ellipses_for_reco).label_map
 
-    lut = jnp.array(
+    lut = _factor * jnp.array(
         [
             # loc, spread
             [0.0, 0.0],  # BG
@@ -75,7 +80,7 @@ def generate_shepp_logan_in_2d(grid_shape: tuple[int, ...] = (64, 64), spread=Fa
     target_fg_value = -total_wo_fg / fg_size
     lut = lut.at[1].set(jnp.array([target_fg_value, abs(target_fg_value)]))
     chi = lut[sim, 0]  # prelim
-    assert jnp.isclose(chi.sum(), 0, atol=1e-3, rtol=1e-3)
+    assert jnp.isclose(chi.sum(), 0, atol=1e-3 * _factor, rtol=1e-3)
     # my inversion enforces zero-mean, so I would prefer the phantom
     # to be zero-mean too, so that I don't need to force / reference it additionally
     if spread:
