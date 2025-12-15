@@ -26,7 +26,12 @@ def model_unpooled(
     prior={},
     obs: Float[Array, " *spatial"] | None = None,
 ):
-    """Simplest QSM model."""
+    """Simplest QSM model.
+
+    χ(r) ~ N(0, σ_χ)
+    σ²_obs ~ Γ^(-1)(α, β)
+    obs ~ N(f(χ), σ_obs)
+    """
     obs_var = numpyro.sample(
         "obs_var",
         dist.InverseGamma(**prior.get("obs_var", DEFAULT_PRIOR["obs_var"])),
@@ -47,7 +52,11 @@ def model_unpooled_marginalised(
     prior={},
     obs: Float[Array, " *spatial"] | None = None,
 ):
-    """Simplest QSM model with the noise STD marginalised out."""
+    """Simplest QSM model with the noise STD marginalised out.
+
+    χ(r) ~ N(0, σ_χ)
+    obs ~ StudentT(2α, f(χ), √β/α)
+    """
 
     prior_obs_var = prior.get("obs_var", DEFAULT_PRIOR["obs_var"])
     obs_df = 2 * prior_obs_var["concentration"]
@@ -73,6 +82,15 @@ def model_pooled_decentred(
     prior={},
     obs: Float[Array, " *spatial"] | None = None,
 ):
+    """Multilevel QSM model with non-centred parametrisation.
+
+    ε(r) ~ N(0, 1)
+    σ_χ ~ N_+
+    μ_χ ~ N(0, _)
+    χ(r) = μ_χ + ε(r) * σ_χ
+    σ²_obs ~ Γ^(-1)(α, β)
+    obs ~ N(f(χ), σ_obs)
+    """
     obs_var = numpyro.sample(
         "obs_var",
         dist.InverseGamma(
@@ -110,6 +128,14 @@ def model_pooled_decentred_marginalised(
     prior={},
     obs: Float[Array, " *spatial"] | None = None,
 ):
+    """Non-centred multilevel QSM model with marginalised noise variance.
+
+    ε(r) ~ N(0, 1)
+    σ_χ ~ Γ^(-1)
+    μ_χ ~ N(0, _)
+    χ(r) = μ_χ + ε(r) * σ_χ
+    obs ~ StudentT(2α, f(χ), √β/α)
+    """
     prior_obs_var = prior.get("obs_var", DEFAULT_PRIOR["obs_var"])
     obs_df = 2 * prior_obs_var["concentration"]
     obs_var = prior_obs_var["rate"] / prior_obs_var["concentration"]
@@ -144,7 +170,13 @@ def model_pooled_fully_marginalised(
     prior={},
     obs: Float[Array, " *spatial"] | None = None,
 ):
-    """Dencentred parametrisation of a hierarchical model with ROI-variance marginalised."""
+    """Non-centred multilevel QSM model with marginalised noise- and ROI-variance.
+
+    ε(r) ~ StudentT
+    μ_χ ~ N(0, _)
+    χ(r) = μ_χ + ε(r)
+    obs ~ StudentT(2α, f(χ), √β/α)
+    """
     prior_obs_var = prior.get("obs_var", DEFAULT_PRIOR["obs_var"])
     obs_df = 2 * prior_obs_var["concentration"]
     obs_var = prior_obs_var["rate"] / prior_obs_var["concentration"]
@@ -179,6 +211,14 @@ def model_pooled_centred(
     prior={},
     obs: Float[Array, " *spatial"] | None = None,
 ):
+    """Multilevel QSM model with centred parametrisation.
+
+    σ_χ ~ Γ^(-1)
+    μ_χ ~ N(0, _)
+    χ(r) = N(μ_χ, σ_χ)
+    σ²_obs ~ Γ^(-1)(α, β)
+    obs ~ N(f(χ), σ_obs)
+    """
     obs_var = numpyro.sample(
         "obs_var",
         dist.InverseGamma(
@@ -213,6 +253,13 @@ def model_pooled_centred_marginalised(
     prior={},
     obs: Float[Array, " *spatial"] | None = None,
 ):
+    """Multilevel QSM model with centred parametrisation.
+
+    σ_χ ~ Γ^(-1)
+    μ_χ ~ N(0, _)
+    χ(r) = N(μ_χ, σ_χ)
+    obs ~ StudentT(2α, f(χ), √β/α)
+    """
     prior_obs_var = prior.get("obs_var", DEFAULT_PRIOR["obs_var"])
     obs_df = 2 * prior_obs_var["concentration"]
     obs_var = prior_obs_var["rate"] / prior_obs_var["concentration"]
@@ -245,6 +292,15 @@ def model_rft_log_unpooled(
     obs: Float[Array, " *spatial"] | None = None,
     ft_norm="backward",
 ):
+    """Probabilistic QSM model with the prior in the Fourier domain.
+
+    χ_arg(k) ~ U[-π, π]
+    χ_log(k) ~ N(f(k), g(k))
+    χ(k) = exp(χ_log(k) + i χ_arg(k))
+    χ(r) = rFT(χ(k))
+    σ²_obs ~ Γ^(-1)(α, β)
+    obs ~ N(f(χ), σ_obs)
+    """
     ndim = len(grid_shape)
     ft_axes = tuple(range(-ndim, 0))
     rft_shape = kernel_rft.shape
@@ -290,6 +346,19 @@ def model_rft_log_pooled_decentred(
     obs: Float[Array, " *spatial"] | None = None,
     ft_norm="backward",
 ):
+    """Non-centred multilevel QSM model with the prior in the Fourier domain.
+
+    μ_χ ~
+    σ_χ ~
+    χ(r) ~ N(μ_χ, σ_χ)
+    χ(k) = rFT^(-1)(χ(r))
+
+    χ_arg(k) ~ U[-π, π], observed=arg(χ(k))
+    χ_log(k) ~ N(f(k), g(k)), observed=log(|χ(k)|)
+
+    σ²_obs ~ Γ^(-1)(α, β)
+    obs ~ N(f(χ), σ_obs)
+    """
     # This model is refactored to be decentred, and works VERY well
     # See https://gemini.google.com/share/6b03e6d86dbf
     ndim = len(grid_shape)
