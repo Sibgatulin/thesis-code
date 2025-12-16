@@ -1,4 +1,4 @@
-"""Simplest models from scratch for my sanity."""
+"""Probabilistic models for scalar QSM."""
 
 import jax.numpy as jnp
 import numpyro

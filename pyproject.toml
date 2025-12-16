@@ -17,6 +17,7 @@ dependencies = [
   "numpyro>=0.16.1",
   "arviz>=0.20.0",
   "yaslp @ git+https://github.com/MedPhysJena/yaslp.git#egg=v0.4.0",
+  "pytest>=9.0.2",
 ]
 classifiers = [
   "Intended Audience :: Developers",
