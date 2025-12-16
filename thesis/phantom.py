@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from jaxtyping import Int, Array, Float
 import jax.numpy as jnp
 from yaslp.phantom import Ellipse, EllipsoidPhantom
 
@@ -14,12 +15,13 @@ LUT = {
 }
 
 
-def generate_shepp_logan_in_2d(
-    grid_shape: tuple[int, ...] = (64, 64), spread=False, units="ppb"
-):
-    if units not in ["ppb", "ppm"]:
-        raise ValueError(f"units must be 'ppm' or 'ppb', got {units}")
-    _factor = {"ppm": 1, "ppb": 1e3}[units]
+def generate_pair_of_shepp_logans_in_2d(
+    grid_shape: tuple[int, ...] = (64, 64),
+) -> tuple[Int[Array, "n m"], Int[Array, "n m"]]:
+    """Return the pair of Shepp-Logan like phantom used in the thesis.
+
+    One captures the 'true' and the other a simplified varsion of the ROIs.
+    """
     ellipses_for_sim = [
         Ellipse(value=1, radius=(0.8, 0.9), center=(0, 0), phi=0),  # FG
         # The value of the following ellipses should be understood relative to the value
@@ -57,6 +59,16 @@ def generate_shepp_logan_in_2d(
 
     # has only non-overlapping ROIs
     reco = EllipsoidPhantom(grid_shape, ellipses_for_reco).label_map
+    return sim, reco
+
+
+def generate_qsm_shepp_logan_in_2d(
+    sim: Int[Array, "n m"], spread=False, units="ppb"
+) -> tuple[Int[Array, "n m"], dict[str, Float[Array, " roi"]]]:
+    """Given a structure, fill in from a LUT and rescale to mean(qsm) = 0."""
+    if units not in ["ppb", "ppm"]:
+        raise ValueError(f"units must be 'ppm' or 'ppb', got {units}")
+    _factor = {"ppm": 1, "ppb": 1e3}[units]
 
     lut = _factor * jnp.array(
         [
@@ -86,11 +98,25 @@ def generate_shepp_logan_in_2d(
     if spread:
         import jax.random as jr
 
-        chi = chi + lut[sim, 1] * jr.normal(jr.PRNGKey(0), shape=grid_shape)
+        chi = chi + lut[sim, 1] * jr.normal(jr.PRNGKey(0), shape=sim.shape)
 
     luts = {
         "chi_loc": lut[:, 0],
         "chi_spread": lut[:, 1],
         "obs_scale": 0.3 * lut[:, 1].at[-1].set(lut[-1, 1] * 7),
     }
+    return chi, luts
+
+
+def generate_shepp_logan_in_2d(
+    grid_shape: tuple[int, ...] = (64, 64), spread=False, units="ppb"
+) -> tuple[
+    Int[Array, "n m"],
+    Int[Array, "n m"],
+    Int[Array, "n m"],
+    dict[str, Float[Array, " roi"]],
+]:
+    """Generate a pair of structures and a sample QSM with LUTs."""
+    sim, reco = generate_pair_of_shepp_logans_in_2d(grid_shape)
+    chi, luts = generate_qsm_shepp_logan_in_2d(sim, spread, units)
     return sim, reco, chi, luts
