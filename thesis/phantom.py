@@ -120,3 +120,44 @@ def generate_shepp_logan_in_2d(
     sim, reco = generate_pair_of_shepp_logans_in_2d(grid_shape)
     chi, luts = generate_qsm_shepp_logan_in_2d(sim, spread, units)
     return sim, reco, chi, luts
+
+
+def generate_ast_shepp_logan_in_2d(
+    sim: Int[Array, "n m"], units="ppb"
+) -> tuple[Int[Array, "n m 2"], Float[Array, " roi 3"]]:
+    """Generate an STI phantom and normalise its trace to 0."""
+    if units not in ["ppb", "ppm"]:
+        raise ValueError(f"units must be 'ppm' or 'ppb', got {units}")
+    _factor = {"ppm": 1, "ppb": 1e3}[units]
+
+    NROI = 10
+    assert jnp.unique(sim).size == NROI and sim.max() == NROI - 1
+
+    lut = jnp.array(
+        [
+            # loc, spread
+            [0.0, 0.0, 0.0],  # BG
+            [jnp.nan, jnp.nan, jnp.nan],  # FG
+            [-0.07, -0.01, 0.001],  # A
+            [-0.01, -0.08, 0.001],  # B
+            [0.100, 0.100, 1.000],  # inside D
+            [0.100, 0.100, -1.00],  # inside D
+            [0.100, 0.100, 0.000],  # inside D
+            [-0.10, -0.10, -0.75],  # tiny in center
+            [0.100, -0.10, -0.75],  # C
+            [-0.10, 0.100, 0.750],  # tiny under C
+        ]
+    )
+    lut = lut.at[:, :2].set(lut[:, :2] * _factor)
+
+    ast = lut[sim]
+    assert ast.ndim == 3 and ast.shape[-1] == 3
+    # hacky way to normalise total trace sum to 0
+    total_trace_wo_fg = jnp.nansum(ast[..., :2])  # trace of the unraveled tensor
+    fg_size = (sim == 1).sum()
+    target_trace_fg_value = -total_trace_wo_fg / fg_size
+    lut = lut.at[1, :2].set(target_trace_fg_value / 2)
+    ast = lut[sim]  # prelim
+    assert jnp.isclose(ast[..., :2].sum(), 0, atol=1e-3 * _factor, rtol=1e-3)
+
+    return ast, lut
