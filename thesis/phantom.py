@@ -137,7 +137,7 @@ def generate_ast_shepp_logan_in_2d(
         [
             # loc, spread
             [0.0, 0.0, 0.0],  # BG
-            [jnp.nan, jnp.nan, jnp.nan],  # FG
+            [jnp.nan, jnp.nan, 0.0],  # FG
             [-0.07, -0.01, 0.001],  # A
             [-0.01, -0.08, 0.001],  # B
             [0.100, 0.100, 1.000],  # inside D
@@ -157,6 +157,7 @@ def generate_ast_shepp_logan_in_2d(
     fg_size = (sim == 1).sum()
     target_trace_fg_value = -total_trace_wo_fg / fg_size
     lut = lut.at[1, :2].set(target_trace_fg_value / 2)
+    assert jnp.isfinite(lut).all()
     ast = lut[sim]  # prelim
     assert jnp.isclose(ast[..., :2].sum(), 0, atol=1e-3 * _factor, rtol=1e-3)
 
