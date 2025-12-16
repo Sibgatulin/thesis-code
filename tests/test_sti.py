@@ -185,7 +185,7 @@ def test_unraveled_kernels_at_kspace_point(
         jnp.array([[0, 0, 1], [0, 1, 1]]),
     ],
 )
-def test_simulation_field_from_uraveled_tensor_and_bdir_and_knorm(b_dir):
+def test_forward_sti_implementation_comparison(b_dir):
     ndim = b_dir.shape[-1]
     ncomp = int(ndim * (ndim + 1) / 2)
     N = 32
@@ -211,3 +211,31 @@ def test_simulation_field_from_uraveled_tensor_and_bdir_and_knorm(b_dir):
     print(f"{fields_trailing.shape=}")
     assert fields_trailing.shape == fields_naively.shape
     assert jnp.allclose(fields_trailing, fields_naively, atol=1e-4, rtol=1e-4)
+
+
+@pytest.mark.parametrize(
+    "b_dir",
+    [
+        jnp.array([0, 1]),
+        jnp.array([0, 1, 0]),
+        jnp.array([[0, 1], [1, 0]]),
+        jnp.array([[0, 0, 1], [0, 1, 1]]),
+    ],
+)
+@pytest.mark.parametrize(
+    "simulate_fn",
+    [
+        forward.simulate_field_from_unraveled_tensor_and_bdir_naively,
+        forward.simulate_field_from_unraveled_tensor_and_bdirs,
+        forward.simulate_field_from_unraveled_tensor_and_bdir_orientation_trails,
+    ],
+)
+def test_forward_sti_benchmark(b_dir, simulate_fn, benchmark):
+    """Meant to prove that one should not simulate tensor convolution niavely."""
+    ndim = b_dir.shape[-1]
+    ncomp = int(ndim * (ndim + 1) / 2)
+    N = 32
+    grid_shape = (N,) * ndim
+    phantom = shepp_logan(grid_shape)
+    chi_comps = phantom[..., None] * jnp.arange(1, 1 + ncomp)
+    benchmark(simulate_fn, b_dir, chi_comps)
