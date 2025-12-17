@@ -80,7 +80,7 @@ def show_projections(
     window_percentiles: tuple[float, float] = (0, 100),
     cbar: bool = True,
     cbar_kws={},
-    subplots_kws={}
+    subplots_kws={},
 ):
     if not (array.ndim == 3 or (array.ndim == 4 and array.shape[-1] == 3)):
         raise NotImplementedError(
@@ -142,3 +142,19 @@ def show_projections(
             labelleft=False,
         )
     return Plots(axes, ims, cbar)
+
+
+def show_2d_vector_field(
+    vectors, ax=None, scale=20, pivot="mid", linewidth=3, transpose_fn=lambda x: x.T
+):
+    if ax is None:
+        ax = plt.subplot()
+
+    ax.quiver(
+        transpose_fn(vectors[..., 0]),
+        transpose_fn(vectors[..., 1]),
+        scale=scale,
+        pivot=pivot,
+        linewidth=linewidth,
+    )
+    ax.set_aspect(1)

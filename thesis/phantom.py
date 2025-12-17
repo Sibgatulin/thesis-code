@@ -2,6 +2,7 @@
 from jaxtyping import Int, Array, Float
 import jax.numpy as jnp
 from yaslp.phantom import Ellipse, EllipsoidPhantom
+from yaslp.utils import grid_basis
 
 LUT = {
     # BG, FG, A, B, C, D
@@ -17,7 +18,7 @@ LUT = {
 
 def generate_pair_of_shepp_logans_in_2d(
     grid_shape: tuple[int, ...] = (64, 64),
-) -> tuple[Int[Array, "n m"], Int[Array, "n m"]]:
+) -> tuple[Int[Array, "n m"], Int[Array, "n m"]]:  # TODO: add mutliple dispatch
     """Return the pair of Shepp-Logan like phantom used in the thesis.
 
     One captures the 'true' and the other a simplified varsion of the ROIs.
@@ -64,7 +65,7 @@ def generate_pair_of_shepp_logans_in_2d(
 
 def generate_qsm_shepp_logan_in_2d(
     sim: Int[Array, "n m"], spread=False, units="ppb"
-) -> tuple[Int[Array, "n m"], dict[str, Float[Array, " roi"]]]:
+) -> tuple[Float[Array, "n m"], dict[str, Float[Array, " roi"]]]:
     """Given a structure, fill in from a LUT and rescale to mean(qsm) = 0."""
     if units not in ["ppb", "ppm"]:
         raise ValueError(f"units must be 'ppm' or 'ppb', got {units}")
@@ -124,7 +125,7 @@ def generate_shepp_logan_in_2d(
 
 def generate_ast_shepp_logan_in_2d(
     sim: Int[Array, "n m"], units="ppb"
-) -> tuple[Int[Array, "n m 2"], Float[Array, " roi 3"]]:
+) -> tuple[Float[Array, "n m 3"], Float[Array, " roi 3"]]:
     """Generate an STI phantom and normalise its trace to 0."""
     if units not in ["ppb", "ppm"]:
         raise ValueError(f"units must be 'ppm' or 'ppb', got {units}")
@@ -135,7 +136,6 @@ def generate_ast_shepp_logan_in_2d(
 
     lut = jnp.array(
         [
-            # loc, spread
             [0.0, 0.0, 0.0],  # BG
             [jnp.nan, jnp.nan, 0.0],  # FG
             [-0.07, -0.01, 0.001],  # A
@@ -162,3 +162,107 @@ def generate_ast_shepp_logan_in_2d(
     assert jnp.isclose(ast[..., :2].sum(), 0, atol=1e-3 * _factor, rtol=1e-3)
 
     return ast, lut
+
+
+def generate_csst_shepp_logan_in_2d(
+    sim: Int[Array, "n m"], units="ppb", flip_vector_at_centre=False
+) -> tuple[Float[Array, "n m"], Float[Array, "n m"], Float[Array, "n m 2"]]:
+    """Generate a CSST phantom.
+
+    MMS, MSA, vectors, + normalisation of MMS
+    """
+
+    if units not in ["ppb", "ppm"]:
+        raise ValueError(f"units must be 'ppm' or 'ppb', got {units}")
+    _factor = {"ppm": 1, "ppb": 1e3}[units]
+
+    NROI = 10
+    assert jnp.unique(sim).size == NROI and sim.max() == NROI - 1
+    lut = _factor * jnp.array(
+        [
+            # MMS, MSA
+            [0.0, 0.0],  # BG
+            [jnp.nan, jnp.nan],  # FG
+            [-0.07, 0.02],  # A
+            [-0.08, 0.03],  # B
+            [0.1, 0.01],  # inside D
+            [0.13, 0.02],  # inside D
+            [0.15, 0.02],  # inside D
+            [-0.02, 0.04],  # tiny in center
+            [0.0, 0.00],  # C
+            [0.1, 0.01],  # tiny under C
+        ]
+    )
+
+    mms = lut[:, 0][sim]
+    msa = lut[:, 1][sim]
+
+    # define a perturbed vector field
+    lut_eigenv = jnp.array(
+        [
+            # x, y, perurbation (> 0)
+            [0.0, 0.0, 0.0],  # BG
+            [0, 0, 0],  # FG
+            [jnp.cos(1.9), jnp.sin(1.9), 7],  # A
+            [jnp.cos(1.2 - jnp.pi / 2), jnp.sin(1.2 - jnp.pi / 2), 5],  # B
+            [-1, -1, 4],  # inside D
+            [1, -1, 6],  # inside D
+            [0, 0, 0],  # inside D
+            [0, 0, 0],  # tiny in center
+            [0, 0, 0],  # C
+            [0, 0, 0],  # tiny under C
+        ]
+    )
+
+    grid_shape = sim.shape
+    ndim = len(grid_shape)
+    # Let's define a grid of `vec(r)` which indicates how far from 0 the poitn is.
+    # To be consistent with `centroid`, I use domain="int"
+    _grid: Float[Array, "n m"] = grid_basis(grid_shape)  # , domain="int")
+
+    vectors = jnp.full(grid_shape + (ndim,), jnp.nan)
+    for roi_label in range(1, NROI):  # skip the BG
+        perturbation_strength = lut_eigenv[roi_label, -1]
+        if perturbation_strength <= 0:
+            # easy way to mark what should not have vectors
+            continue
+        # primary direction defined in the LUT
+        eigenvector = lut_eigenv[roi_label, :-1]
+        # normalise here for the convenience of LUT definition
+        eigenvector /= jnp.linalg.norm(eigenvector)
+
+        _roi_fg = sim == roi_label
+        # This is an appoximation of `center` in `list[Ellipse]` but does not depend
+        # on any assumptions about the overlap and summation of those ellipses
+        roi_centre = (find_center(_roi_fg * 10) / jnp.array(grid_shape) - 0.5) * 2
+
+        _grid_rel = _grid - roi_centre  # center the grid
+        _grid_projected: Float[Array, "n m"] = (  # on the eigenvector direction
+            _grid_rel / jnp.linalg.norm(_grid_rel, axis=-1, keepdims=True)
+        ) @ eigenvector
+        orthogonality_map = 1 - abs(_grid_projected)
+        # perturb more in the direction perpendicular to the eigenvector
+        # don't perturb the eigenvector direction itself
+        perturbation_orthogonal_to_eigenvector = (
+            _grid_rel * orthogonality_map[..., None]
+        )
+        # Assemble the resulting perturbed vector field
+        _roi_vectors = perturbation_orthogonal_to_eigenvector * perturbation_strength
+        if flip_vector_at_centre:
+            # Increase the angle distribution: perturbations are be aplified where the eigv is flipped
+            _roi_vectors += jnp.sign(_grid_projected)[..., None] * eigenvector
+        else:
+            # keep it straigtforward
+            _roi_vectors += eigenvector
+
+        # update where needed
+        vectors = vectors.at[_roi_fg].set(_roi_vectors[_roi_fg])
+    # normalise the vectors before returning them
+    return mms, msa, vectors / jnp.linalg.norm(vectors, axis=-1, keepdims=True)
+
+
+def find_center(binary_image):
+    """Find center using average of all True/1 pixel positions."""
+    # Get coordinates of all non-zero pixels
+    coords = jnp.argwhere(binary_image)
+    return coords.mean(axis=0)
