@@ -236,23 +236,23 @@ def simulate_field_from_unraveled_tensor_and_bdirs(
 def simulate_field_from_csst(
     b_dir: Float[Array, "#orient ndim"],
     v1: Float[Array, " *spatial ndim"],
-    chi_perp: Float[Array, " *spatial"],
+    mms: Float[Array, " *spatial"],
     msa: Float[Array, " *spatial"],
 ) -> Float[Array, "#orient *spatial"]:
     """Simple CSST forward problem for one or multiple B0 orientations.
 
-    field(k) = (1/3 - (b·k)²) FT[chi_perp] + 1/3 FT[MSA (b·v)²]
+    field(k) = (1/3 - (b·k)²) FT[chi_⊥] + 1/3 FT[MSA (b·v)²]
                - (b·k)(k, FT[v MSA (b·v)])
 
-    where k is a *unit* vector in k-space (i.e. k/||k||)
+    where k is a *unit* vector in k-space (i.e. k/||k||), chi_⊥ = MMS - MSA/3
     field(k=0) := 0
     """
     if b_dir.ndim == 2:
         return vmap(_simulate_field_from_csst, in_axes=(0, None, None, None))(
-            b_dir, v1, chi_perp, msa
+            b_dir, v1, mms, msa
         )
     elif b_dir.ndim == 1:
-        return _simulate_field_from_csst(b_dir, v1, chi_perp, msa)
+        return _simulate_field_from_csst(b_dir, v1, mms, msa)
     else:
         raise ValueError(f"Unsopported {b_dir.shape=}")
 
@@ -261,15 +261,15 @@ def simulate_field_from_csst(
 def _simulate_field_from_csst(
     b_dir: Float[Array, " ndim"],
     v1: Float[Array, " *spatial ndim"],
-    chi_perp: Float[Array, " *spatial"],
+    mms: Float[Array, " *spatial"],
     msa: Float[Array, " *spatial"],
 ) -> Float[Array, " *spatial"]:
     """Simple CSST forward problem for a single B0 orientation.
 
-    field(k) = (1/3 - (b·k)²) FT[chi_perp] + 1/3 FT[MSA (b·v)²]
+    field(k) = (1/3 - (b·k)²) FT[chi_⊥] + 1/3 FT[MSA (b·v)²]
                - (b·k)(k, FT[v MSA (b·v)])
 
-    where k is a *unit* vector in k-space (i.e. k/||k||)
+    where k is a *unit* vector in k-space (i.e. k/||k||), chi_⊥ = MMS - MSA/3
     field(k=0) := 0
     """
     ndim = b_dir.shape[-1]
@@ -293,8 +293,9 @@ def _simulate_field_from_csst(
     # 2. Fourier Transforms
     # We use rfftn for efficiency as inputs are real.
     # Axes are the spatial dimensions (all except the last one for the vector field)
-    grid_shape = chi_perp.shape
+    grid_shape = mms.shape
 
+    chi_perp = mms - msa / 3
     chi_perp_rft: Complex[Array, " *rft"] = jnp.fft.rfftn(chi_perp)
     term2_rft: Complex[Array, " *rft"] = jnp.fft.rfftn(term2_spatial)
     term3_rft: Complex[Array, "*rft ndim"] = jnp.fft.rfftn(
