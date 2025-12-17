@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 
 import jax.numpy as jnp
-import jax.random
+import jax.random as jr
+from jax import vmap
 import pytest
 from jaxtyping import Array, Float
 from yaslp.utils import grid_basis
@@ -9,21 +10,48 @@ from yaslp.utils import grid_basis
 from thesis import forward
 
 
-def simulate_field_from_scalar_and_bdir(
+def _simulate_field_from_scalar_and_bdir(
     b_dir: Float[Array, " ndim"],
     chi_iso: Float[Array, " *spatial"],
     norm="backward",
 ) -> Float[Array, " *spatial"]:
+    """Forwrd QSM problem for a single orientation.
+
+    The problem can be of an arbitrary dimensionality, but the dipole kernel
+    makes physical sense only for the 3D case.
+    """
     assert b_dir.ndim == 1
     assert b_dir.size == chi_iso.ndim
     k_norm = grid_basis(
         chi_iso.shape, reciprocal=True, return_unit_vector=True, rfft=True
     )
-    hk = k_norm @ b_dir
+    hk = k_norm @ b_dir  # this line required the b_dir.ndim=1 assertion
+
     dipole_kernel = ((1 / 3) - hk**2).at[(0,) * chi_iso.ndim].set(0.0)
     return forward.simulate_field_from_scalar_and_kernel(
         dipole_kernel, chi_iso, norm=norm
     )
+
+
+def simulate_field_from_scalar_and_bdir(
+    b_dir: Float[Array, "#orient ndim"],
+    chi_iso: Float[Array, " *spatial"],
+    norm="backward",
+) -> Float[Array, "#orient *spatial"]:
+    """Forwrd QSM problem for one or multiple orientations.
+
+    The problem can be of an arbitrary dimensionality, but the dipole kernel
+    makes physical sense only for the 3D case.
+    """
+    if b_dir.ndim == 2:
+        # vmap over the leftmost axis of b_dir, don't map the other arrays
+        return vmap(_simulate_field_from_scalar_and_bdir, in_axes=(0, None, None))(
+            b_dir, chi_iso, norm
+        )
+    elif b_dir.ndim == 1:
+        return _simulate_field_from_scalar_and_bdir(b_dir, chi_iso, norm)
+    else:
+        raise ValueError(f"Unsopported {b_dir.shape=}")
 
 
 @pytest.mark.parametrize(
@@ -32,6 +60,8 @@ def simulate_field_from_scalar_and_bdir(
         jnp.array([0, 1]),
         jnp.array([0, 1, 0]),
         jnp.array([0, 1, 1]),
+        jnp.array([[0, 1], [1, 0]]),
+        jnp.array([[0, 0, 1], [0, 1, 0], [1, 0, 0], [0, 1, 1]]),
     ],
 )
 def test_csst_reduces_to_isotropic_when_msa_zero(b_dir):
@@ -41,16 +71,16 @@ def test_csst_reduces_to_isotropic_when_msa_zero(b_dir):
     """
     b_dir = b_dir / jnp.linalg.norm(b_dir, axis=-1, keepdims=True)
 
-    ndim = b_dir.size
+    ndim = b_dir.shape[-1]
     grid_shape = (16,) * ndim
-    key = jax.random.PRNGKey(0)
+    key = jr.PRNGKey(0)
 
     # Generate random inputs
-    chi_perp = jax.random.normal(key, grid_shape)
+    chi_perp = jr.normal(key, grid_shape)
     msa = jnp.zeros(grid_shape)  # MSA is zero
 
     # Random vectors (should be irrelevant when MSA=0)
-    v1 = jax.random.normal(key, grid_shape + (ndim,))
+    v1 = jr.normal(key, grid_shape + (ndim,))
     v1 = v1 / jnp.linalg.norm(v1, axis=-1, keepdims=True)
 
     # 1. Run CSST
@@ -84,16 +114,16 @@ def test_csst_parallel_fiber_check(b_dir):
     """
     b_dir = b_dir / jnp.linalg.norm(b_dir, axis=-1, keepdims=True)
 
-    ndim = b_dir.size
+    ndim = b_dir.shape[-1]
     grid_shape = (16,) * ndim
 
-    key = jax.random.PRNGKey(0)
+    key = jr.PRNGKey(0)
 
     # Fibers perfectly aligned with B0 everywhere
     v1 = jnp.ones(grid_shape + (1,)) * b_dir
 
-    chi_perp = jax.random.normal(key, grid_shape)
-    msa = jax.random.normal(key, grid_shape)
+    chi_perp = jr.normal(key, grid_shape)
+    msa = jr.normal(key, grid_shape)
 
     # 1. Run CSST
     field_csst = forward.simulate_field_from_csst(b_dir, v1, chi_perp, msa)
@@ -125,16 +155,16 @@ def test_csst_perpendicular_fiber_check(b_dir, v1):
     """
     b_dir = b_dir / jnp.linalg.norm(b_dir, axis=-1, keepdims=True)
 
-    ndim = b_dir.size
+    ndim = b_dir.shape[-1]
     grid_shape = (16,) * ndim
 
-    key = jax.random.PRNGKey(0)
+    key = jr.PRNGKey(0)
 
     # Fibers ought to be perpendicular to B0
     v1 = jnp.ones(grid_shape + (1,)) * v1
 
-    chi_perp = jax.random.normal(key, grid_shape)
-    msa = jax.random.normal(key, grid_shape)
+    chi_perp = jr.normal(key, grid_shape)
+    msa = jr.normal(key, grid_shape)
 
     # 1. Run CSST
     field_csst = forward.simulate_field_from_csst(b_dir, v1, chi_perp, msa)

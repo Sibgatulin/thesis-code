@@ -234,15 +234,40 @@ def simulate_field_from_unraveled_tensor_and_bdirs(
 
 @jit
 def simulate_field_from_csst(
+    b_dir: Float[Array, "#orient ndim"],
+    v1: Float[Array, " *spatial ndim"],
+    chi_perp: Float[Array, " *spatial"],
+    msa: Float[Array, " *spatial"],
+) -> Float[Array, "#orient *spatial"]:
+    """Simple CSST forward problem for one or multiple B0 orientations.
+
+    field(k) = (1/3 - (b·k)²) FT[chi_perp] + 1/3 FT[MSA (b·v)²]
+               - (b·k)(k, FT[v MSA (b·v)])
+
+    where k is a *unit* vector in k-space (i.e. k/||k||)
+    field(k=0) := 0
+    """
+    if b_dir.ndim == 2:
+        return vmap(_simulate_field_from_csst, in_axes=(0, None, None, None))(
+            b_dir, v1, chi_perp, msa
+        )
+    elif b_dir.ndim == 1:
+        return _simulate_field_from_csst(b_dir, v1, chi_perp, msa)
+    else:
+        raise ValueError(f"Unsopported {b_dir.shape=}")
+
+
+@jit
+def _simulate_field_from_csst(
     b_dir: Float[Array, " ndim"],
     v1: Float[Array, " *spatial ndim"],
     chi_perp: Float[Array, " *spatial"],
     msa: Float[Array, " *spatial"],
 ) -> Float[Array, " *spatial"]:
-    """Simple CSST forward problem.
+    """Simple CSST forward problem for a single B0 orientation.
 
-    field(k) = (1/3 - (h·k)²) FT[chi_perp] + 1/3 FT[MSA (h·v)²]
-               - (h·k)(k, FT[v MSA (h·v)])
+    field(k) = (1/3 - (b·k)²) FT[chi_perp] + 1/3 FT[MSA (b·v)²]
+               - (b·k)(k, FT[v MSA (b·v)])
 
     where k is a *unit* vector in k-space (i.e. k/||k||)
     field(k=0) := 0
@@ -256,14 +281,14 @@ def simulate_field_from_csst(
     # 1. Precompute spatial terms to limit FFT calls
     # Projection of fibre direction onto B0: (H, v1)
     # b_dir is (3,), vectors is (..., 3). Result is (...)
-    _hv: Float[Array, " *spatial"] = jnp.dot(v1, b_dir)
+    _bv: Float[Array, " *spatial"] = jnp.dot(v1, b_dir)
 
     # Term 2 spatial map: MSA * (H, v1)^2
-    term2_spatial: Float[Array, " *spatial"] = 1 / 3 * msa * _hv**2
+    term2_spatial: Float[Array, " *spatial"] = 1 / 3 * msa * _bv**2
 
     # Term 3 vector field: MSA * (H, v1) * v1
     # We broaden (msa * hv_proj) to (..., 1) to broadcast against vectors (..., 3)
-    term3_vector_field: Float[Array, " *spatial ndim"] = v1 * (msa * _hv)[..., None]
+    term3_vector_field: Float[Array, " *spatial ndim"] = v1 * (msa * _bv)[..., None]
 
     # 2. Fourier Transforms
     # We use rfftn for efficiency as inputs are real.
@@ -281,8 +306,8 @@ def simulate_field_from_csst(
     k_norm = grid_basis(grid_shape, reciprocal=True, return_unit_vector=True, rfft=True)
 
     # Standard Dipole Kernel: 1/3 - (H.k)^2
-    _hk: Float[Array, " *rft"] = k_norm @ b_dir
-    kernel_rft = 1.0 / 3.0 - _hk**2  # .at[(0,) * ndim].set(0.0)
+    _bk: Float[Array, " *rft"] = k_norm @ b_dir
+    kernel_rft = 1.0 / 3.0 - _bk**2  # .at[(0,) * ndim].set(0.0)
 
     # 4. Assemble the Field in K-space
     field_rft = kernel_rft * chi_perp_rft + term2_rft
@@ -292,7 +317,7 @@ def simulate_field_from_csst(
     # and the formula has 1/k^2, the magnitudes cancel out (see reasoning above).
     # We just need (H.k_hat) * (k_hat . term3_k)
     k_dot_term3: Complex[Array, " *rft"] = jnp.sum(k_norm * term3_rft, axis=-1)
-    field_rft = field_rft - (_hk * k_dot_term3)
+    field_rft = field_rft - (_bk * k_dot_term3)
 
     # 5. Inverse FFT
     # For the lack of better idea, null the DC on the whole field
