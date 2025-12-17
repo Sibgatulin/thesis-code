@@ -11,7 +11,7 @@ from yaslp.utils import grid_basis
 ## SCALAR ##
 
 
-@jit
+@partial(jit, static_argnames="norm")
 def simulate_field_from_scalar_and_kernel(
     kernel_rft: Float[Array, " *rft"],
     chi_iso: Float[Array, " *spatial"],
@@ -227,3 +227,74 @@ def simulate_field_from_unraveled_tensor_and_bdirs(
         raise ValuerError(
             "orientation_axis must be 'leading' or 'trailing', got " + orientation_axis
         )
+
+
+## CSST
+
+
+@jit
+def simulate_field_from_csst(
+    b_dir: Float[Array, " ndim"],
+    v1: Float[Array, " *spatial ndim"],
+    chi_perp: Float[Array, " *spatial"],
+    msa: Float[Array, " *spatial"],
+) -> Float[Array, " *spatial"]:
+    """Simple CSST forward problem.
+
+    field(k) = (1/3 - (h·k)²) FT[chi_perp] + 1/3 FT[MSA (h·v)²]
+               - (h·k)(k, FT[v MSA (h·v)])
+
+    where k is a *unit* vector in k-space (i.e. k/||k||)
+    field(k=0) := 0
+    """
+    ndim = b_dir.shape[-1]
+    assert b_dir.ndim == 1, f"Multiple orientations not supported, got {b_dir.shape=}"
+    assert v1.shape[-1] == ndim, (
+        f"Inconsistent dimensionality: {b_dir.shape[-1]=} != {v1.shape[-1]=}"
+    )
+
+    # 1. Precompute spatial terms to limit FFT calls
+    # Projection of fibre direction onto B0: (H, v1)
+    # b_dir is (3,), vectors is (..., 3). Result is (...)
+    _hv: Float[Array, " *spatial"] = jnp.dot(v1, b_dir)
+
+    # Term 2 spatial map: MSA * (H, v1)^2
+    term2_spatial: Float[Array, " *spatial"] = 1 / 3 * msa * _hv**2
+
+    # Term 3 vector field: MSA * (H, v1) * v1
+    # We broaden (msa * hv_proj) to (..., 1) to broadcast against vectors (..., 3)
+    term3_vector_field: Float[Array, " *spatial ndim"] = v1 * (msa * _hv)[..., None]
+
+    # 2. Fourier Transforms
+    # We use rfftn for efficiency as inputs are real.
+    # Axes are the spatial dimensions (all except the last one for the vector field)
+    grid_shape = chi_perp.shape
+
+    chi_perp_rft: Complex[Array, " *rft"] = jnp.fft.rfftn(chi_perp)
+    term2_rft: Complex[Array, " *rft"] = jnp.fft.rfftn(term2_spatial)
+    term3_rft: Complex[Array, "*rft ndim"] = jnp.fft.rfftn(
+        term3_vector_field, axes=tuple(range(-ndim - 1, -1))
+    )
+
+    # 3. K-space Kernel Construction
+    # Get unit k-vectors. shape: (..., ndim)
+    k_norm = grid_basis(grid_shape, reciprocal=True, return_unit_vector=True, rfft=True)
+
+    # Standard Dipole Kernel: 1/3 - (H.k)^2
+    _hk: Float[Array, " *rft"] = k_norm @ b_dir
+    kernel_rft = 1.0 / 3.0 - _hk**2  # .at[(0,) * ndim].set(0.0)
+
+    # 4. Assemble the Field in K-space
+    field_rft = kernel_rft * chi_perp_rft + term2_rft
+
+    # Part C: Subtract non-local anisotropic term
+    # We need (k . F{vector_field}). Since k_norm is unit vector,
+    # and the formula has 1/k^2, the magnitudes cancel out (see reasoning above).
+    # We just need (H.k_hat) * (k_hat . term3_k)
+    k_dot_term3: Complex[Array, " *rft"] = jnp.sum(k_norm * term3_rft, axis=-1)
+    field_rft = field_rft - (_hk * k_dot_term3)
+
+    # 5. Inverse FFT
+    # For the lack of better idea, null the DC on the whole field
+    # (rather then on dipole kernel components)
+    return jnp.fft.irfftn(field_rft.at[(0,) * ndim].set(0.0))
