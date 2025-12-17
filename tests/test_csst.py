@@ -10,50 +10,6 @@ from yaslp.utils import grid_basis
 from thesis import forward
 
 
-def _simulate_field_from_scalar_and_bdir(
-    b_dir: Float[Array, " ndim"],
-    chi_iso: Float[Array, " *spatial"],
-    norm="backward",
-) -> Float[Array, " *spatial"]:
-    """Forwrd QSM problem for a single orientation.
-
-    The problem can be of an arbitrary dimensionality, but the dipole kernel
-    makes physical sense only for the 3D case.
-    """
-    assert b_dir.ndim == 1
-    assert b_dir.size == chi_iso.ndim
-    k_norm = grid_basis(
-        chi_iso.shape, reciprocal=True, return_unit_vector=True, rfft=True
-    )
-    hk = k_norm @ b_dir  # this line required the b_dir.ndim=1 assertion
-
-    dipole_kernel = ((1 / 3) - hk**2).at[(0,) * chi_iso.ndim].set(0.0)
-    return forward.simulate_field_from_scalar_and_kernel(
-        dipole_kernel, chi_iso, norm=norm
-    )
-
-
-def simulate_field_from_scalar_and_bdir(
-    b_dir: Float[Array, "#orient ndim"],
-    chi_iso: Float[Array, " *spatial"],
-    norm="backward",
-) -> Float[Array, "#orient *spatial"]:
-    """Forwrd QSM problem for one or multiple orientations.
-
-    The problem can be of an arbitrary dimensionality, but the dipole kernel
-    makes physical sense only for the 3D case.
-    """
-    if b_dir.ndim == 2:
-        # vmap over the leftmost axis of b_dir, don't map the other arrays
-        return vmap(_simulate_field_from_scalar_and_bdir, in_axes=(0, None, None))(
-            b_dir, chi_iso, norm
-        )
-    elif b_dir.ndim == 1:
-        return _simulate_field_from_scalar_and_bdir(b_dir, chi_iso, norm)
-    else:
-        raise ValueError(f"Unsopported {b_dir.shape=}")
-
-
 @pytest.mark.parametrize(
     "b_dir",
     [
@@ -88,7 +44,7 @@ def test_csst_reduces_to_isotropic_when_msa_zero(b_dir):
 
     # 2. Run Reference Scalar Sim
     # Reconstruct scalar kernel manually for comparison
-    field_scalar = simulate_field_from_scalar_and_bdir(b_dir, chi_perp)
+    field_scalar = forward.simulate_field_from_scalar_and_bdir(b_dir, chi_perp)
 
     assert jnp.allclose(field_csst, field_scalar, atol=1e-5), (
         "MSA=0 should match scalar sim"
@@ -131,7 +87,7 @@ def test_csst_parallel_fiber_check(b_dir):
 
     # 2. Run Scalar Sim with Effective Susceptibility
     # Effective Chi = Chi_perp + MSA
-    field_expected = simulate_field_from_scalar_and_bdir(b_dir, chi_perp + msa)
+    field_expected = forward.simulate_field_from_scalar_and_bdir(b_dir, chi_perp + msa)
     assert jnp.allclose(field_csst, field_expected, atol=1e-2, rtol=1e-2), (
         "When v || B0, CSST should reduce to scalar sim of (chi_perp + MSA)"
     )
@@ -171,7 +127,7 @@ def test_csst_perpendicular_fiber_check(b_dir, v1):
     # field_csst -= field_csst.mean()  # manually reference to 0
 
     # 2. Run Scalar Sim with Effective Susceptibility = chi_perp
-    field_expected = simulate_field_from_scalar_and_bdir(b_dir, chi_perp)
+    field_expected = forward.simulate_field_from_scalar_and_bdir(b_dir, chi_perp)
     assert jnp.allclose(field_csst, field_expected, atol=1e-2, rtol=1e-2), (
         "When v || B0, CSST should reduce to scalar sim of chi_perp"
     )
