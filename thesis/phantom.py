@@ -226,7 +226,7 @@ def generate_csst_shepp_logan_in_2d(
     # To be consistent with `centroid`, I use domain="int"
     _grid: Float[Array, "n m"] = grid_basis(grid_shape)  # , domain="int")
 
-    vectors = jnp.full(grid_shape + (ndim,), jnp.nan)
+    vectors = jnp.full(grid_shape + (ndim,), 0.0)
     for roi_label in range(1, NROI):  # skip the BG
         perturbation_strength = lut_eigenv[roi_label, -1]
         if perturbation_strength <= 0:
@@ -264,7 +264,11 @@ def generate_csst_shepp_logan_in_2d(
         # update where needed
         vectors = vectors.at[_roi_fg].set(_roi_vectors[_roi_fg])
     # normalise the vectors before returning them
-    return mms, msa, vectors / jnp.linalg.norm(vectors, axis=-1, keepdims=True)
+    return (
+        mms,
+        msa,
+        jnp.nan_to_num(vectors / jnp.linalg.norm(vectors, axis=-1, keepdims=True)),
+    )
 
 
 def find_center(binary_image):
