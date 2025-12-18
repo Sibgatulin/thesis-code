@@ -182,7 +182,7 @@ def generate_csst_shepp_logan_in_2d(
         [
             # MMS, MSA
             [0.0, 0.0],  # BG
-            [jnp.nan, jnp.nan],  # FG
+            [jnp.nan, 0.0],  # FG
             [-0.07, 0.02],  # A
             [-0.08, 0.03],  # B
             [0.1, 0.01],  # inside D
@@ -194,8 +194,14 @@ def generate_csst_shepp_logan_in_2d(
         ]
     )
 
-    mms = lut[:, 0][sim]
-    msa = lut[:, 1][sim]
+    mms = lut[sim, 0]
+    total_wo_fg = jnp.nansum(mms)
+    fg_size = (sim == 1).sum()
+    target_fg_value = -total_wo_fg / fg_size
+    lut = lut.at[1, 0].set(target_fg_value)
+    mms = lut[sim, 0]  # prelim
+    assert jnp.isclose(mms.sum(), 0, atol=1e-3 * _factor, rtol=1e-3)
+    msa = lut[sim, 1]
 
     # define a perturbed vector field
     lut_eigenv = jnp.array(
@@ -207,10 +213,10 @@ def generate_csst_shepp_logan_in_2d(
             [jnp.cos(1.2 - jnp.pi / 2), jnp.sin(1.2 - jnp.pi / 2), 5],  # B
             [-1, -1, 4],  # inside D
             [1, -1, 6],  # inside D
-            [0, 0, 0],  # inside D
-            [0, 0, 0],  # tiny in center
+            [0, -1, 5],  # inside D
+            [1, 0, 8],  # tiny in center
             [0, 0, 0],  # C
-            [0, 0, 0],  # tiny under C
+            [0, 1, 9],  # tiny under C
         ]
     )
 
