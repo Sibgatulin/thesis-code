@@ -43,6 +43,8 @@ def show_2d(
                 f"{window_percentiles=} yield {vlims=}, aborting. "
                 "Check your data or specify vlims manually"
             )
+            if not show_axis:
+                ax.axis("off")
             return Plot(ax, None, None)
 
     if norm is None:
@@ -145,14 +147,27 @@ def show_projections(
 
 
 def show_2d_vector_field(
-    vectors, ax=None, scale=20, pivot="mid", linewidth=3, transpose_fn=lambda x: x.T
+    vectors,
+    ax=None,
+    scale=20,
+    pivot="mid",
+    linewidth=3,
+    transpose_fn=lambda x: x.T,
+    show_every_nth: int | None = None,
 ):
     if ax is None:
         ax = plt.subplot()
 
+    import jax.numpy as jnp  # onp leads to strange diagonals :shrug:
+
+    show_at = (slice(None, None, show_every_nth),) * (vectors.ndim - 1)  # i.e. 2
+    array = jnp.full_like(vectors, jnp.nan).at[show_at].set(vectors[show_at])
+    mask = jnp.linalg.norm(vectors, axis=-1)
+    array = jnp.where(mask[..., None], array, jnp.nan)
+
     ax.quiver(
-        transpose_fn(vectors[..., 0]),
-        transpose_fn(vectors[..., 1]),
+        transpose_fn(array[..., 0]),
+        transpose_fn(array[..., 1]),
         scale=scale,
         pivot=pivot,
         linewidth=linewidth,
