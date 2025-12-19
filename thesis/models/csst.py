@@ -12,6 +12,8 @@ DEFAULT_PRIOR = {
     "obs_var": {"concentration": 3, "rate": 100},
     "mms": {"loc": 0, "scale": 50},
     "msa": {"loc": 0, "scale": 50},  # TODO: fix: this is temporary!
+    "mms_loc": {"loc": 0, "scale": 50},
+    "mms_var": {"concentration": 3, "rate": 100},
     "msa_loc": {"loc": 0, "scale": 50},
     "msa_var": {"concentration": 3, "rate": 100},
 }
@@ -93,6 +95,13 @@ def model_pooled_decentred_marginalised_unconstrained_msa(
     obs_var = prior_obs_var["rate"] / prior_obs_var["concentration"]
 
     with numpyro.plate("roi", nroi):
+        mms_loc = numpyro.sample(
+            "mms_loc", dist.Normal(**prior.get("mms_loc", DEFAULT_PRIOR["mms_loc"]))
+        )
+        mms_var = numpyro.sample(
+            "mms_var",
+            dist.InverseGamma(**prior.get("mms_var", DEFAULT_PRIOR["mms_var"])),
+        )
         msa_loc = numpyro.sample(
             "msa_loc", dist.Normal(**prior.get("msa_loc", DEFAULT_PRIOR["msa_loc"]))
         )
@@ -102,8 +111,9 @@ def model_pooled_decentred_marginalised_unconstrained_msa(
         )
 
     with numpyro.plate_stack("spatial", grid_shape):
-        mms = numpyro.sample(
-            "mms", dist.Normal(**prior.get("mms", DEFAULT_PRIOR["mms"]))
+        mms_eps = numpyro.sample("mms_eps", dist.Normal(0, 1))
+        mms = numpyro.deterministic(
+            "mms", mms_loc[roi] + jnp.sqrt(mms_var)[roi] * mms_eps
         )
         msa_eps = numpyro.sample("msa_eps", dist.Normal(0, 1))
         msa = numpyro.deterministic(
