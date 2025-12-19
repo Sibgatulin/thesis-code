@@ -186,11 +186,11 @@ def generate_csst_shepp_logan_in_2d(
             [-0.07, 0.02],  # A
             [-0.08, 0.03],  # B
             [0.1, 0.01],  # inside D
-            [0.13, 0.02],  # inside D
-            [0.15, 0.02],  # inside D
+            [0.13, 0.025],  # inside D
+            [0.15, 0.015],  # inside D
             [-0.02, 0.04],  # tiny in center
             [0.0, 0.00],  # C
-            [0.1, 0.01],  # tiny under C
+            [0.1, 0.005],  # tiny under C
         ]
     )
 
