@@ -158,6 +158,9 @@ def show_2d_vector_field(
     if ax is None:
         ax = plt.subplot()
 
+    if vectors.shape[-1] != 2:
+        raise ValueError("Can only handle a 2D vecotr field correctly")
+
     import jax.numpy as jnp  # onp leads to strange diagonals :shrug:
 
     show_at = (slice(None, None, show_every_nth),) * (vectors.ndim - 1)  # i.e. 2
