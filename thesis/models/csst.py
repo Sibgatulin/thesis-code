@@ -165,6 +165,142 @@ class ModelUnpooledMarginalisedUnconstrainedMSA:
                     )
 
 
+class ModelPooledMarginalisedUnconstrainedMSA(
+    ModelUnpooledMarginalisedUnconstrainedMSA
+):
+    def __init__(
+        self,
+        b_dir: Float[Array, "orient ndim"],
+        v1: Float[Array, "*spatial ndim"],
+        roi: Int[Array, " *spatial"],
+        prior={},
+        obs: Float[Array, "orient *spatial"] | None = None,
+        store_deterministic_sites: bool = True,
+    ):
+        super().__init__(
+            b_dir=b_dir,
+            v1=v1,
+            prior=prior,
+            obs=obs,
+            store_deterministic_sites=store_deterministic_sites,
+        )
+        assert roi.shape == self.grid_shape, f"{roi.shape=}!={self.grid_shape=}"
+        self.roi = roi
+
+        labels = jnp.unique(roi)
+        self.nroi = labels.size
+        assert jnp.all(labels == jnp.arange(self.nroi)), (
+            f"Provided labels run {labels}. Use a consecutive sequence instead"
+        )
+
+        # Additional complexity: some ROIs may not belong to WM.
+        # I choose to exclude them from MSA estimation (i.e. null their global MSA parameters)
+        # but this may well be an inapropriate assumption
+        labels_wm = set(jnp.unique(roi[self.mask_wm]).tolist())
+        labels_non_wm = set(jnp.unique(roi[~self.mask_wm]).tolist())
+        labels_undecided = labels_wm.intersection(labels_non_wm)
+        if labels_undecided:
+            logger.warning(
+                f"The following ROIs seem to be both in and outside of the WM: {labels_undecided}"
+            )
+        labels_non_msa = set(labels.tolist()).difference(labels_wm)
+        if labels_non_msa:
+            logger.info(
+                f"MSA in the following ROIs will be suppressed: {labels_non_msa}"
+            )
+        self.labels_non_msa = jnp.array(list(labels_non_msa), dtype=int)
+        self.labels_msa_mask = jnp.array(
+            [i not in labels_non_msa for i in range(self.nroi)], dtype=bool
+        )
+
+    def __call__(self):
+        """Pooled CSST model with the noise STD marginalised out.
+
+        mms(r) ~ N(0, σ_mms)
+        msa(r) ~ N(0, σ_msa) # WRONG AND TEMPORARY
+        σ²_obs ~ Γ^(-1)(α, β)
+        obs ~ StudentT(2α, f(mms, msa), √β/α)
+        """
+        prior_obs_var = self.prior.get("obs_var", DEFAULT_PRIOR["obs_var"])
+        obs_df = 2 * prior_obs_var["concentration"]
+        obs_var = prior_obs_var["rate"] / prior_obs_var["concentration"]
+
+        # Start with the ROI-level sites
+        with numpyro.plate("roi", self.nroi):
+            # somehow if I mask as done in the commented out code, the sampler fails pretty badly
+            # with handlers.mask(mask=jnp.ones(self.nroi, dtype=bool).at[0].set(False)):
+            mms_loc = numpyro.sample(
+                "mms_loc",
+                dist.Normal(**self.prior.get("mms_loc", DEFAULT_PRIOR["mms_loc"])),
+            )
+            mms_var = numpyro.sample(
+                "mms_var",
+                dist.InverseGamma(
+                    **self.prior.get("mms_var", DEFAULT_PRIOR["mms_var"])
+                ),
+            )
+            # Not 100% sure this is a good move
+            # with handlers.mask(mask=self.labels_msa_mask):
+            msa_loc = numpyro.sample(
+                "msa_loc",
+                dist.Normal(**self.prior.get("msa_loc", DEFAULT_PRIOR["msa_loc"])),
+            )
+            msa_var = numpyro.sample(
+                "msa_var",
+                dist.InverseGamma(
+                    **self.prior.get("msa_var", DEFAULT_PRIOR["msa_var"])
+                ),
+            )
+
+        # Sample as little as possible: for both unknown maps only within their
+        # corresponding domains:
+        # ...For MMS I would typically assume it to be the same as that of observed field
+        with numpyro.plate("voxel_fg", self.mask_fg_size):
+            _mms_eps = numpyro.sample("_mms_eps", dist.Normal(0, 1))
+        # ...For MSA I *CURRENTLY* assume it to be limited to the WM mask
+        with numpyro.plate("voxel_wm", self.mask_wm_size):
+            _msa_eps = numpyro.sample("_msa_eps", dist.Normal(0, 1))
+
+        # Attribute the sampled vectors of values to their respective maps
+        mms = mms_loc.at[0].set(0.0)[self.roi] + jnp.sqrt(mms_var).at[0].set(0.0)[
+            self.roi
+        ] * jnp.zeros(self.grid_shape).at[self.mask_fg].set(_mms_eps)
+        # I am free to choose the reference mean susceptibility
+        mms -= mms.mean()
+
+        # With MSA also null those ROIs outside of WM
+        msa = msa_loc.at[self.labels_non_msa].set(0.0)[self.roi] + jnp.sqrt(msa_var).at[
+            self.labels_non_msa
+        ].set(0.0)[self.roi] * jnp.zeros(self.grid_shape).at[self.mask_wm].set(_msa_eps)
+
+        # The rest is the same as in the parent class
+        with numpyro.plate_stack("spatial", self.grid_shape):
+            # it's nice to have the correctly shaped and referenced samples available
+            # out of the box but I want to be able to run MCMC when it gets tight
+            if self.store_deterministic_sites:
+                numpyro.deterministic("mms", mms)
+                numpyro.deterministic("msa", msa)
+
+            with numpyro.plate("orient", self.norient):
+                obs_loc = numpyro.deterministic(
+                    "field",
+                    # NOTE: I wonder if using MMS and not chi_perp adds to the collinearity of the problem
+                    # I mean to say, I wonder if chi_perp and MSA would be easier to sampler
+                    # from than MMS and MSA
+                    simulate_field_from_csst(self.b_dir, self.v1, mms, msa),
+                )
+
+                # Mask to avoid trying to fit the field outside of the (object unless desired)
+                # see the docstring of `_mask_obs`
+                with handlers.mask(mask=self.mask_obs):
+                    numpyro.sample(
+                        "obs",
+                        # StudentT is the result of marginalisation of σ~Γ^{-1} and obs~N(..., σ)
+                        dist.StudentT(obs_df, obs_loc, jnp.sqrt(obs_var)),
+                        obs=self.obs,
+                    )
+
+
 def model_unpooled_marginalised_unconstrained_msa(
     b_dir: Float[Array, "orient ndim"],
     v1: Float[Array, "*spatial ndim"],
