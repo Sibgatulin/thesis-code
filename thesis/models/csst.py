@@ -20,55 +20,14 @@ DEFAULT_PRIOR = {
 }
 
 
-def _mask_obs(
-    mask_fg: Bool[Array, " *spatial"] = jnp.array(True),
-    obs: Float[Array, "orient *spatial"] | None = None,
-    default_to_mask_fg_for_obs: bool = True,
-    obs_shape: tuple[int, ...] = (),  # passed in case obs is None
-) -> Bool[Array, "orient *spatial"]:
-    """Complex logic of masking the observed field.
-
-    1nd: if obs are given and explicitly masked with NaNs,
-            those are considered the mask (and infs are excluded as well)
-    2rd: should mask_fg (that restricts the domain of chi) be used
-            for the observation?
-    3th: fallback. Permit all
-            In a simulated scenario it may be desired to constrain the domain
-            of chi and use the whole field for the inversion.
-    """
-    if obs is not None:
-        # 1nd: if obs are given, check if they are explicitly masked
-        mask_finite = jnp.isfinite(obs)
-        if not mask_finite.all():
-            # Assume intentional masking
-            logger.info(
-                "No explicit obs mask passed, "
-                f"found {1 - mask_finite.mean():.0%} infinite values"
-            )
-            return mask_finite
-
-    # 2rd: by default limit obs to mask_fg (better named mask_chi)
-    # In a simulated scenario it may be desired to constrain the domain of chi
-    # and use the whole field for the inversion. In this case this flag should
-    # be set to False
-    if default_to_mask_fg_for_obs:
-        logger.info("Using mask_fg for mask_obs")
-        return jnp.broadcast_to(mask_fg[None], obs_shape)
-
-    # Fallback: permit all
-    return jnp.ones(obs_shape, dtype=bool)
-
-
 class ModelUnpooledMarginalisedUnconstrainedMSA:
     def __init__(
         self,
         b_dir: Float[Array, "orient ndim"],
         v1: Float[Array, "*spatial ndim"],
-        mask_fg: Bool[Array, " *spatial"] = jnp.array(True),
         prior={},
         obs: Float[Array, "orient *spatial"] | None = None,
         store_deterministic_sites: bool = True,
-        default_to_mask_fg_for_obs: bool = True,
     ):
         """Simplest CSST model with the noise STD marginalised out.
 
@@ -91,31 +50,40 @@ class ModelUnpooledMarginalisedUnconstrainedMSA:
             f"Inconsistent dimensionality {v1.shape=} & {self.b_dir.shape=}"
         )
         self.v1 = v1
-        self.mask_wm = jnp.linalg.norm(v1, axis=-1) > 0
-        self.mask_wm_size: int = self.mask_wm.sum().item()
-        self.mask_fg = mask_fg
-        self.mask_fg_size: int = self.mask_fg.sum().item()
+
         self.store_deterministic_sites = store_deterministic_sites
         self.prior = prior
 
-        # I could not resist, the complexity starts to grow again
-        self.mask_obs = _mask_obs(
-            mask_fg=mask_fg,
-            obs=obs,
-            default_to_mask_fg_for_obs=default_to_mask_fg_for_obs,
-            obs_shape=(self.norient,) + self.grid_shape,
-        )
-
-        # Validate obs
+        # Process the observations
+        # 1. Identify the expected shape
+        obs_shape = (self.norient,) + self.grid_shape
+        # 2. If obs are given, validate the shape
         if obs is not None:
-            assert obs.shape == (self.norient,) + self.grid_shape, (
+            assert obs.shape == obs_shape, (
                 f"{obs.shape=} != ({self.norient=},) + {self.grid_shape=}"
             )
-            obs_finite_permitted = jnp.isfinite(obs[self.mask_obs])
-            assert obs_finite_permitted.all(), (
-                f"Found {1 - obs_finite_permitted.mean():.0%} infinite obs in mask_obs"
-            )
+        # 3. Generate the mask for obs:
+        if obs is None:
+            self.mask_obs = jnp.ones(obs_shape, dtype=bool)
+            # it could also be jnp.array(True), but I wish to have a predictable and fixed shape.
+            # May be avoided
 
+        else:
+            # If obs is given, check where it is masked explicitly
+            mask_finite = jnp.isfinite(obs)
+            if not mask_finite.all():
+                # Assume intentional masking
+                logger.info(
+                    f"Generating mask_obs from the field. Found {mask_finite.mean():.0%} finite values"
+                )
+            else:
+                logger.warning(
+                    "All observed values are finite. "
+                    "Will be inverting the field in the entire FoV. Is it a simulation?"
+                )
+            self.mask_obs = mask_finite
+
+            # This is a safety net for myself as I used to mask the field with zeros, not NaNs
             mask_nonzero = abs(obs) > 0
             frac_nonzero = mask_nonzero.mean()
             if frac_nonzero < 0.9:
@@ -124,6 +92,18 @@ class ModelUnpooledMarginalisedUnconstrainedMSA:
                     "Consider masking with NaNs or pass mask_obs"
                 )
         self.obs = obs
+
+        # Define domains for the unknown susceptibilities
+        # 1. MSA currently assumed to be defined in the WM
+        # 1.1 WM is currently assumed to be identified by the DTI eigenvectors
+        self.mask_wm = jnp.linalg.norm(v1, axis=-1) > 0
+        self.mask_wm_size: int = self.mask_wm.sum().item()
+        # 2. MMS is assumed to be defined everywhere, where field is observed
+        # Furthermore, I take all voxels which are observed in at least 1 orientation
+        # (alternatively, I could limit to all voxels that are fully observed at all
+        # orientations)
+        self.mask_fg = jnp.any(self.mask_obs, axis=0)  # rely on mask_obs.ndim = 1+ndim
+        self.mask_fg_size: int = self.mask_fg.sum().item()
 
     def __call__(self):
         """Simplest CSST model with the noise STD marginalised out.
