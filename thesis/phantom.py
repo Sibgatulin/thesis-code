@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import jax.random as jr
 from jaxtyping import Int, Array, Float
 import jax.numpy as jnp
 from yaslp.phantom import Ellipse, EllipsoidPhantom
@@ -97,8 +98,6 @@ def generate_qsm_shepp_logan_in_2d(
     # my inversion enforces zero-mean, so I would prefer the phantom
     # to be zero-mean too, so that I don't need to force / reference it additionally
     if spread:
-        import jax.random as jr
-
         chi = chi + lut[sim, 1] * jr.normal(jr.PRNGKey(0), shape=sim.shape)
 
     luts = {
@@ -165,7 +164,7 @@ def generate_ast_shepp_logan_in_2d(
 
 
 def generate_csst_shepp_logan_in_2d(
-    sim: Int[Array, "n m"], units="ppb", flip_vector_at_centre=False
+    sim: Int[Array, "n m"], units="ppb", flip_vector_at_centre=False, spread=False
 ) -> tuple[Float[Array, "n m"], Float[Array, "n m"], Float[Array, "n m 2"]]:
     """Generate a CSST phantom.
 
@@ -194,14 +193,23 @@ def generate_csst_shepp_logan_in_2d(
         ]
     )
 
-    mms = lut[sim, 0]
+    mms = lut[sim, 0]  # prelim
     total_wo_fg = jnp.nansum(mms)
     fg_size = (sim == 1).sum()
     target_fg_value = -total_wo_fg / fg_size
     lut = lut.at[1, 0].set(target_fg_value)
-    mms = lut[sim, 0]  # prelim
-    assert jnp.isclose(mms.sum(), 0, atol=1e-3 * _factor, rtol=1e-3)
+    mms = lut[sim, 0]
+    if spread:
+        mms = mms + 0.1 * abs(lut[sim, 0]) * jr.normal(jr.PRNGKey(0), shape=sim.shape)
+        # HACK: oh well, just can't rely on the LUT in this case too much
+        mms -= mms.mean()
+    else:
+        assert jnp.isclose(mms.sum(), 0, atol=1e-3 * _factor, rtol=1e-3), (
+            f"{mms.sum()=}"
+        )
     msa = lut[sim, 1]
+    if spread:
+        msa = msa + 0.1 * abs(lut[sim, 1]) * jr.normal(jr.PRNGKey(0), shape=sim.shape)
 
     # define a perturbed vector field
     lut_eigenv = jnp.array(
