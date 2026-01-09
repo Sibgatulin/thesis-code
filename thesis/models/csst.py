@@ -84,11 +84,10 @@ class ModelUnpooledMarginalisedUnconstrainedMSA:
             self.mask_obs = mask_finite
 
             # This is a safety net for myself as I used to mask the field with zeros, not NaNs
-            mask_nonzero = abs(obs) > 0
-            frac_nonzero = mask_nonzero.mean()
-            if frac_nonzero < 0.9:
+            frac_zero = jnp.isclose(obs[mask_finite], 0).mean()
+            if frac_zero > 0.1:
                 logger.warning(
-                    f"Found {1 - frac_nonzero:.0%} zeros in obs. "
+                    f"Found {frac_zero:.0%} zeros in obs. "
                     "Consider masking with NaNs or pass mask_obs"
                 )
         self.obs = obs
