@@ -154,6 +154,7 @@ def show_2d_vector_field(
     linewidth=3,
     transpose_fn=lambda x: x.T,
     show_every_nth: int | None = None,
+    **kwargs,
 ):
     if ax is None:
         ax = plt.subplot()
@@ -174,5 +175,6 @@ def show_2d_vector_field(
         scale=scale,
         pivot=pivot,
         linewidth=linewidth,
+        **kwargs,
     )
     ax.set_aspect(1)
