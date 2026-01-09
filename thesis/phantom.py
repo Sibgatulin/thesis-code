@@ -163,6 +163,87 @@ def generate_ast_shepp_logan_in_2d(
     return ast, lut
 
 
+def _populate_from_lut_to_zerosum(
+    sim, lut: Float[Array, " nroi"], spread=False, ref_label: int = 1, factor: float = 1
+):
+    chi = lut[sim]  # prelim
+    mask_ref = sim == ref_label
+    total_wo_ref = jnp.nansum(jnp.where(mask_ref, jnp.nan, chi))
+    ref_size = mask_ref.sum()
+    target_ref_value = -total_wo_ref / ref_size
+    lut = lut.at[ref_label].set(target_ref_value)
+    chi = lut[sim]
+    if spread:
+        chi = chi + 0.1 * abs(lut[sim]) * jr.normal(jr.PRNGKey(0), shape=sim.shape)
+        # HACK: oh well, just can't rely on the LUT in this case too much
+        chi -= chi.mean()
+    else:
+        assert jnp.isclose(chi.sum(), 0, atol=1e-3 * factor, rtol=1e-3), f"{chi.sum()=}"
+    return chi, lut
+
+
+def build_perturbed_vector_field(
+    sim: Int[Array, "n m"],
+    lut_eigenv: Float[Array, "nroi 3"],
+    flip_vector_at_centre: bool = False,
+):
+    grid_shape = sim.shape
+    ndim = len(grid_shape)
+    # Let's define a grid of `vec(r)` which indicates how far from 0 the point is.
+    # To be consistent with `centroid`, I use domain="int"
+    _grid: Float[Array, "n m"] = grid_basis(grid_shape)  # , domain="int")
+    nroi = lut_eigenv.shape[0]
+    assert lut_eigenv.shape[1] == 3, f"{lut_eigenv.shape=}!=(nroi, 3)"
+    _sim_unique = jnp.unique(sim)
+    assert _sim_unique.size == nroi, (
+        f"len({_sim_unique}) = {_sim_unique.size} != {nroi=}"
+    )
+    assert sim.max() == nroi - 1, f"{sim.max()} != {nroi} - 1"
+    # _dispersion_scale=jnp.array(_dispersion_scale)
+    # if _dispersion_scale.ndim==0:
+    #     _dispersion_scale =
+
+    vectors = jnp.full(grid_shape + (ndim,), 0.0)
+    for roi_label in range(1, nroi):  # skip the BG
+        perturbation_strength = lut_eigenv[roi_label, -1]
+        if perturbation_strength <= 0:
+            # easy way to mark what should not have vectors
+            continue
+        # primary direction defined in the LUT
+        eigenvector = lut_eigenv[roi_label, :-1]
+        # normalise here for the convenience of LUT definition
+        eigenvector /= jnp.linalg.norm(eigenvector)
+
+        _roi_fg = sim == roi_label
+        # This is an appoximation of `center` in `list[Ellipse]` but does not depend
+        # on any assumptions about the overlap and summation of those ellipses
+        roi_centre = (find_center(_roi_fg) / jnp.array(grid_shape) - 0.5) * 2
+
+        _grid_rel = _grid - roi_centre  # center the grid
+        _grid_projected: Float[Array, "n m"] = (  # on the eigenvector direction
+            _grid_rel / jnp.linalg.norm(_grid_rel, axis=-1, keepdims=True)
+        ) @ eigenvector
+        orthogonality_map = 1 - abs(_grid_projected)
+        # perturb more in the direction perpendicular to the eigenvector
+        # don't perturb the eigenvector direction itself
+        perturbation_orthogonal_to_eigenvector = (
+            _grid_rel * orthogonality_map[..., None]
+        )
+        # Assemble the resulting perturbed vector field
+        _roi_vectors = perturbation_orthogonal_to_eigenvector * perturbation_strength
+        if flip_vector_at_centre:
+            # Increase the angle distribution: perturbations are be aplified where the eigv is flipped
+            _roi_vectors += jnp.sign(_grid_projected)[..., None] * eigenvector
+        else:
+            # keep it straigtforward
+            _roi_vectors += eigenvector
+
+        # update where needed
+        vectors = vectors.at[_roi_fg].set(_roi_vectors[_roi_fg])
+    # normalise the vectors before returning them
+    return jnp.nan_to_num(vectors / jnp.linalg.norm(vectors, axis=-1, keepdims=True))
+
+
 def generate_csst_shepp_logan_in_2d(
     sim: Int[Array, "n m"], units="ppb", flip_vector_at_centre=False, spread=False
 ) -> tuple[Float[Array, "n m"], Float[Array, "n m"], Float[Array, "n m 2"]]:
@@ -193,20 +274,10 @@ def generate_csst_shepp_logan_in_2d(
         ]
     )
 
-    mms = lut[sim, 0]  # prelim
-    total_wo_fg = jnp.nansum(mms)
-    fg_size = (sim == 1).sum()
-    target_fg_value = -total_wo_fg / fg_size
-    lut = lut.at[1, 0].set(target_fg_value)
-    mms = lut[sim, 0]
-    if spread:
-        mms = mms + 0.1 * abs(lut[sim, 0]) * jr.normal(jr.PRNGKey(0), shape=sim.shape)
-        # HACK: oh well, just can't rely on the LUT in this case too much
-        mms -= mms.mean()
-    else:
-        assert jnp.isclose(mms.sum(), 0, atol=1e-3 * _factor, rtol=1e-3), (
-            f"{mms.sum()=}"
-        )
+    mms, lut_mms_updated = _populate_from_lut_to_zerosum(
+        sim, lut[:, 0], spread=spread, factor=_factor
+    )
+    lut = lut.at[:, 0].set(lut_mms_updated)
     msa = lut[sim, 1]
     if spread:
         msa = msa + 0.1 * abs(lut[sim, 1]) * jr.normal(jr.PRNGKey(0), shape=sim.shape)
@@ -228,55 +299,10 @@ def generate_csst_shepp_logan_in_2d(
         ]
     )
 
-    grid_shape = sim.shape
-    ndim = len(grid_shape)
-    # Let's define a grid of `vec(r)` which indicates how far from 0 the poitn is.
-    # To be consistent with `centroid`, I use domain="int"
-    _grid: Float[Array, "n m"] = grid_basis(grid_shape)  # , domain="int")
-
-    vectors = jnp.full(grid_shape + (ndim,), 0.0)
-    for roi_label in range(1, NROI):  # skip the BG
-        perturbation_strength = lut_eigenv[roi_label, -1]
-        if perturbation_strength <= 0:
-            # easy way to mark what should not have vectors
-            continue
-        # primary direction defined in the LUT
-        eigenvector = lut_eigenv[roi_label, :-1]
-        # normalise here for the convenience of LUT definition
-        eigenvector /= jnp.linalg.norm(eigenvector)
-
-        _roi_fg = sim == roi_label
-        # This is an appoximation of `center` in `list[Ellipse]` but does not depend
-        # on any assumptions about the overlap and summation of those ellipses
-        roi_centre = (find_center(_roi_fg * 10) / jnp.array(grid_shape) - 0.5) * 2
-
-        _grid_rel = _grid - roi_centre  # center the grid
-        _grid_projected: Float[Array, "n m"] = (  # on the eigenvector direction
-            _grid_rel / jnp.linalg.norm(_grid_rel, axis=-1, keepdims=True)
-        ) @ eigenvector
-        orthogonality_map = 1 - abs(_grid_projected)
-        # perturb more in the direction perpendicular to the eigenvector
-        # don't perturb the eigenvector direction itself
-        perturbation_orthogonal_to_eigenvector = (
-            _grid_rel * orthogonality_map[..., None]
-        )
-        # Assemble the resulting perturbed vector field
-        _roi_vectors = perturbation_orthogonal_to_eigenvector * perturbation_strength
-        if flip_vector_at_centre:
-            # Increase the angle distribution: perturbations are be aplified where the eigv is flipped
-            _roi_vectors += jnp.sign(_grid_projected)[..., None] * eigenvector
-        else:
-            # keep it straigtforward
-            _roi_vectors += eigenvector
-
-        # update where needed
-        vectors = vectors.at[_roi_fg].set(_roi_vectors[_roi_fg])
-    # normalise the vectors before returning them
-    return (
-        mms,
-        msa,
-        jnp.nan_to_num(vectors / jnp.linalg.norm(vectors, axis=-1, keepdims=True)),
+    vectors = build_perturbed_vector_field(
+        sim=sim, lut_eigenv=lut_eigenv, flip_vector_at_centre=flip_vector_at_centre
     )
+    return mms, msa, vectors
 
 
 def find_center(binary_image):
