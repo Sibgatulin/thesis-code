@@ -134,7 +134,7 @@ class ModelUnpooledMarginalisedUnconstrainedMSA:
 
         # Attribute the sampled vectors of values to their respective maps
         msa = jnp.zeros(self.grid_shape).at[self.mask_wm].set(_msa)
-        # I am free to choose the reference mean susceptibility
+        # I am free to choose the reference mean susceptibility -> mean over the FG!
         mms = jnp.zeros(self.grid_shape).at[self.mask_fg].set(_mms - _mms.mean())
 
         with numpyro.plate_stack("spatial", self.grid_shape):
@@ -264,8 +264,11 @@ class ModelPooledMarginalisedUnconstrainedMSA(
         mms = mms_loc.at[0].set(0.0)[self.roi] + jnp.sqrt(mms_var).at[0].set(0.0)[
             self.roi
         ] * jnp.zeros(self.grid_shape).at[self.mask_fg].set(_mms_eps)
-        # I am free to choose the reference mean susceptibility
-        mms -= mms.mean()
+        # I am free to choose the reference mean susceptibility:
+        # for consistency with the parent class, I'll compute the mean over the FG
+        # and subtract it from the FG only, leaving all else 0.0
+        mms = jnp.where(self.mask_fg, mms - mms[self.mask_fg].mean(), 0.0)
+        # TODO: optimise. This above made the model noticeably slower.
 
         # With MSA also null those ROIs outside of WM
         msa = msa_loc.at[self.labels_non_msa].set(0.0)[self.roi] + jnp.sqrt(msa_var).at[
