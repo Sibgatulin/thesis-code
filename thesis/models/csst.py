@@ -20,7 +20,7 @@ DEFAULT_PRIOR = {
 }
 
 
-class ModelUnpooledMarginalisedUnconstrainedMSA:
+class ModelUnpooledUnconstrainedMSA:
     def __init__(
         self,
         b_dir: Float[Array, "orient ndim"],
@@ -28,13 +28,20 @@ class ModelUnpooledMarginalisedUnconstrainedMSA:
         prior={},
         obs: Float[Array, "orient *spatial"] | None = None,
         store_deterministic_sites: bool = True,
+        marginalise_obs_var: bool = True,
     ):
-        """Simplest CSST model with the noise STD marginalised out.
+        """Simplest CSST model.
 
-        mms(r) ~ N(0, σ_mms)
-        msa(r) ~ N(0, σ_msa) # WRONG AND TEMPORARY
-        σ²_obs ~ Γ^(-1)(α, β)
-        obs ~ StudentT(2α, f(mms, msa), √β/α)
+        The prior on the local variables:
+
+            mms(r) ~ N(0, σ_mms)
+            msa(r) ~ N(0, σ_msa) # WRONG AND TEMPORARY
+
+        if marginalise_obs_var == True:
+            obs ~ StudentT(2α, f(mms, msa), √β/α)
+        otherwise:
+            σ²_obs ~ Γ^(-1)(α, β)
+            obs ~ N(f(χ), σ_obs)
 
         This implementation is a functor only because of its reliance on
         mask_{fg,wm}_size in __call__. These sizes (sums) cannot be computed in
@@ -43,6 +50,7 @@ class ModelUnpooledMarginalisedUnconstrainedMSA:
         Presumably, I could have marked them as constant args.
         But I obviously have a weak spot for classes.
         """
+        self.marginalise_obs_var = marginalise_obs_var
         self.b_dir = jnp.atleast_2d(b_dir)
         self.norient, self.ndim = b_dir.shape
         self.grid_shape = v1.shape[:-1]
@@ -105,16 +113,31 @@ class ModelUnpooledMarginalisedUnconstrainedMSA:
         self.mask_fg_size: int = self.mask_fg.sum().item()
 
     def __call__(self):
-        """Simplest CSST model with the noise STD marginalised out.
+        """Simplest CSST model.
 
-        mms(r) ~ N(0, σ_mms)
-        msa(r) ~ N(0, σ_msa) # WRONG AND TEMPORARY
-        σ²_obs ~ Γ^(-1)(α, β)
-        obs ~ StudentT(2α, f(mms, msa), √β/α)
+        The prior on the local variables:
+
+            mms(r) ~ N(0, σ_mms)
+            msa(r) ~ N(0, σ_msa) # WRONG AND TEMPORARY
+
+        if marginalise_obs_var == True:
+            obs ~ StudentT(2α, f(mms, msa), √β/α)
+        otherwise:
+            σ²_obs ~ Γ^(-1)(α, β)
+            obs ~ N(f(χ), σ_obs)
         """
         prior_obs_var = self.prior.get("obs_var", DEFAULT_PRIOR["obs_var"])
-        obs_df = 2 * prior_obs_var["concentration"]
-        obs_var = prior_obs_var["rate"] / prior_obs_var["concentration"]
+        if self.marginalise_obs_var:
+            obs_df = 2 * prior_obs_var["concentration"]
+            obs_var = prior_obs_var["rate"] / prior_obs_var["concentration"]
+
+            # StudentT is the result of marginalisation of σ~Γ^{-1} and obs~N(..., σ)
+            _likelihood_closure = lambda mu: dist.StudentT(
+                obs_df, mu, jnp.sqrt(obs_var)
+            )
+        else:
+            obs_var = numpyro.sample("obs_var", dist.InverseGamma(**prior_obs_var))
+            _likelihood_closure = lambda mu: dist.Normal(mu, jnp.sqrt(obs_var))
 
         # Sample as little as possible: for both unknown maps only within their
         # corresponding domains:
@@ -156,17 +179,10 @@ class ModelUnpooledMarginalisedUnconstrainedMSA:
                 # Mask to avoid trying to fit the field outside of the (object unless desired)
                 # see the docstring of `_mask_obs`
                 with handlers.mask(mask=self.mask_obs):
-                    numpyro.sample(
-                        "obs",
-                        # StudentT is the result of marginalisation of σ~Γ^{-1} and obs~N(..., σ)
-                        dist.StudentT(obs_df, obs_loc, jnp.sqrt(obs_var)),
-                        obs=self.obs,
-                    )
+                    numpyro.sample("obs", _likelihood_closure(obs_loc), obs=self.obs)
 
 
-class ModelPooledMarginalisedUnconstrainedMSA(
-    ModelUnpooledMarginalisedUnconstrainedMSA
-):
+class ModelPooledUnconstrainedMSA(ModelUnpooledUnconstrainedMSA):
     def __init__(
         self,
         b_dir: Float[Array, "orient ndim"],
@@ -175,6 +191,7 @@ class ModelPooledMarginalisedUnconstrainedMSA(
         prior={},
         obs: Float[Array, "orient *spatial"] | None = None,
         store_deterministic_sites: bool = True,
+        marginalise_obs_var: bool = True,
     ):
         super().__init__(
             b_dir=b_dir,
@@ -182,6 +199,7 @@ class ModelPooledMarginalisedUnconstrainedMSA(
             prior=prior,
             obs=obs,
             store_deterministic_sites=store_deterministic_sites,
+            marginalise_obs_var=marginalise_obs_var,
         )
         assert roi.shape == self.grid_shape, f"{roi.shape=}!={self.grid_shape=}"
         self.roi = roi
@@ -213,16 +231,34 @@ class ModelPooledMarginalisedUnconstrainedMSA(
         )
 
     def __call__(self):
-        """Pooled CSST model with the noise STD marginalised out.
+        """Pooled CSST model.
 
-        mms(r) ~ N(0, σ_mms)
-        msa(r) ~ N(0, σ_msa) # WRONG AND TEMPORARY
-        σ²_obs ~ Γ^(-1)(α, β)
-        obs ~ StudentT(2α, f(mms, msa), √β/α)
+        The prior on the global variables per ROI:
+            μ_{mms,msa} ~ N # WRONG AND TEMP FOR MSA
+            σ_{mms,msa} ~ Γ^(-1)
+
+        The prior on the local variables:
+            mms(r) ~ μ_mms[roi] + N(0, 1) * σ_mms[roi]
+            msa(r) ~ μ_msa[roi] + N(0, 1) * σ_msa[roi] # WRONG AND TEMPORARY
+
+        if marginalise_obs_var == True:
+            obs ~ StudentT(2α, f(mms, msa), √β/α)
+        otherwise:
+            σ²_obs ~ Γ^(-1)(α, β)
+            obs ~ N(f(χ), σ_obs)
         """
         prior_obs_var = self.prior.get("obs_var", DEFAULT_PRIOR["obs_var"])
-        obs_df = 2 * prior_obs_var["concentration"]
-        obs_var = prior_obs_var["rate"] / prior_obs_var["concentration"]
+        if self.marginalise_obs_var:
+            obs_df = 2 * prior_obs_var["concentration"]
+            obs_var = prior_obs_var["rate"] / prior_obs_var["concentration"]
+
+            # StudentT is the result of marginalisation of σ~Γ^{-1} and obs~N(..., σ)
+            _likelihood_closure = lambda mu: dist.StudentT(
+                obs_df, mu, jnp.sqrt(obs_var)
+            )
+        else:
+            obs_var = numpyro.sample("obs_var", dist.InverseGamma(**prior_obs_var))
+            _likelihood_closure = lambda mu: dist.Normal(mu, jnp.sqrt(obs_var))
 
         # Start with the ROI-level sites
         with numpyro.plate("roi", self.nroi):
@@ -239,7 +275,6 @@ class ModelPooledMarginalisedUnconstrainedMSA(
                 ),
             )
             # Not 100% sure this is a good move
-            # with handlers.mask(mask=self.labels_msa_mask):
             msa_loc = numpyro.sample(
                 "msa_loc",
                 dist.Normal(**self.prior.get("msa_loc", DEFAULT_PRIOR["msa_loc"])),
@@ -295,120 +330,4 @@ class ModelPooledMarginalisedUnconstrainedMSA(
                 # Mask to avoid trying to fit the field outside of the (object unless desired)
                 # see the docstring of `_mask_obs`
                 with handlers.mask(mask=self.mask_obs):
-                    numpyro.sample(
-                        "obs",
-                        # StudentT is the result of marginalisation of σ~Γ^{-1} and obs~N(..., σ)
-                        dist.StudentT(obs_df, obs_loc, jnp.sqrt(obs_var)),
-                        obs=self.obs,
-                    )
-
-
-def model_unpooled_marginalised_unconstrained_msa(
-    b_dir: Float[Array, "orient ndim"],
-    v1: Float[Array, "*spatial ndim"],
-    mask_fg: Bool[Array, " *spatial"] = jnp.array(True),
-    prior={},
-    obs: Float[Array, " *spatial"] | None = None,
-):
-    """Simplest CSST model with the noise STD marginalised out.
-
-    mms(r) ~ N(0, σ_mms)
-    msa(r) ~ N(0, σ_msa) # WRONG AND TEMPORARY
-    σ²_obs ~ Γ^(-1)(α, β)
-    obs ~ StudentT(2α, f(mms, msa), √β/α)
-    """
-    b_dir = jnp.atleast_2d(b_dir)
-    norient, ndim = b_dir.shape
-    grid_shape = v1.shape[:-1]
-    assert len(grid_shape) == ndim and v1.shape[-1] == ndim, (
-        f"Inconsistent dimensionality {v1.shape=} & {b_dir.shape=}"
-    )
-
-    prior_obs_var = prior.get("obs_var", DEFAULT_PRIOR["obs_var"])
-    obs_df = 2 * prior_obs_var["concentration"]
-    obs_var = prior_obs_var["rate"] / prior_obs_var["concentration"]
-
-    with numpyro.plate_stack("spatial", grid_shape):
-        mms = numpyro.sample(
-            "mms", dist.Normal(**prior.get("mms", DEFAULT_PRIOR["mms"]))
-        )
-        msa = numpyro.sample(
-            "msa",
-            dist.Normal(**prior.get("msa", DEFAULT_PRIOR["msa"])),  # TODO: Fix!
-            # dist.HalfNormal(**prior.get("msa", DEFAULT_PRIOR["msa"])),  # TODO: Fix!
-            # dist.TransformedDistribution(
-            #     dist.Normal(**prior.get("msa", DEFAULT_PRIOR["msa"])),
-            #     [dist.transforms.SoftplusTransform()],
-            # ),
-        )
-        obs_loc = numpyro.deterministic(
-            "field", simulate_field_from_csst(b_dir, v1, mms, msa)
-        )
-        with numpyro.plate("orient", norient):
-            with handlers.mask(mask=mask_fg):
-                numpyro.sample(
-                    "obs", dist.StudentT(obs_df, obs_loc, jnp.sqrt(obs_var)), obs=obs
-                )
-
-
-def model_pooled_decentred_marginalised_unconstrained_msa(
-    b_dir: Float[Array, "orient ndim"],
-    v1: Float[Array, "*spatial ndim"],
-    roi: Int[Array, " *spatial"],
-    nroi: int,
-    mask_fg: Bool[Array, " *spatial"] = jnp.array(True),
-    prior={},
-    obs: Float[Array, " *spatial"] | None = None,
-):
-    """Simplest CSST model with the noise STD marginalised out.
-
-    mms(r) ~ N(0, σ_mms)
-    msa(r) ~ N(0, σ_msa) # WRONG AND TEMPORARY
-    σ²_obs ~ Γ^(-1)(α, β)
-    obs ~ StudentT(2α, f(mms, msa), √β/α)
-    """
-    b_dir = jnp.atleast_2d(b_dir)
-    norient, ndim = b_dir.shape
-    grid_shape = v1.shape[:-1]
-    assert len(grid_shape) == ndim and v1.shape[-1] == ndim, (
-        f"Inconsistent dimensionality {v1.shape=} & {b_dir.shape=}"
-    )
-    mask_wm = jnp.linalg.norm(v1, axis=-1) > 0
-
-    prior_obs_var = prior.get("obs_var", DEFAULT_PRIOR["obs_var"])
-    obs_df = 2 * prior_obs_var["concentration"]
-    obs_var = prior_obs_var["rate"] / prior_obs_var["concentration"]
-
-    with numpyro.plate("roi", nroi):
-        mms_loc = numpyro.sample(
-            "mms_loc", dist.Normal(**prior.get("mms_loc", DEFAULT_PRIOR["mms_loc"]))
-        )
-        mms_var = numpyro.sample(
-            "mms_var",
-            dist.InverseGamma(**prior.get("mms_var", DEFAULT_PRIOR["mms_var"])),
-        )
-        msa_loc = numpyro.sample(
-            "msa_loc", dist.Normal(**prior.get("msa_loc", DEFAULT_PRIOR["msa_loc"]))
-        )
-        msa_var = numpyro.sample(
-            "msa_var",
-            dist.InverseGamma(**prior.get("msa_var", DEFAULT_PRIOR["msa_var"])),
-        )
-
-    with numpyro.plate_stack("spatial", grid_shape):
-        mms_eps = numpyro.sample("mms_eps", dist.Normal(0, 1))
-        mms = numpyro.deterministic(
-            "mms", mms_loc[roi] + jnp.sqrt(mms_var)[roi] * mms_eps
-        )
-        msa_eps = numpyro.sample("msa_eps", dist.Normal(0, 1))
-        msa = numpyro.deterministic(
-            "msa", (msa_loc[roi] + jnp.sqrt(msa_var)[roi] * msa_eps) * mask_wm
-        )
-        with numpyro.plate("orient", norient):
-            obs_loc = numpyro.deterministic(
-                "field", simulate_field_from_csst(b_dir, v1, mms, msa)
-            )
-            with handlers.mask(mask=mask_fg):
-                numpyro.sample(
-                    "obs", dist.StudentT(obs_df, obs_loc, jnp.sqrt(obs_var)), obs=obs
-                )
+                    numpyro.sample("obs", _likelihood_closure(obs_loc), obs=self.obs)
