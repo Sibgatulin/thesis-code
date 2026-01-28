@@ -331,3 +331,92 @@ class ModelPooledUnconstrainedMSA(ModelUnpooledUnconstrainedMSA):
                 # see the docstring of `_mask_obs`
                 with handlers.mask(mask=self.mask_obs):
                     numpyro.sample("obs", _likelihood_closure(obs_loc), obs=self.obs)
+
+
+class ModelUnpooledMvNUnconstrainedMSA(ModelUnpooledUnconstrainedMSA):
+    def __init__(
+        self,
+        b_dir: Float[Array, "orient ndim"],
+        v1: Float[Array, "*spatial ndim"],
+        prior={},
+        obs: Float[Array, "orient *spatial"] | None = None,
+        store_deterministic_sites: bool = True,
+        marginalise_obs_var: bool = True,
+    ):
+        super().__init__(
+            b_dir=b_dir,
+            v1=v1,
+            prior=prior,
+            obs=obs,
+            store_deterministic_sites=store_deterministic_sites,
+            marginalise_obs_var=marginalise_obs_var,
+        )
+
+    def __call__(self):
+        """Simplest CSST model with latent MvN
+
+        The prior on the local variables:
+
+            mms(r), msa(r) ~ MvN(0, Σ)
+
+        if marginalise_obs_var == True:
+            obs ~ StudentT(2α, f(mms, msa), √β/α)
+        otherwise:
+            σ²_obs ~ Γ^(-1)(α, β)
+            obs ~ N(f(χ), σ_obs)
+        """
+        prior_obs_var = self.prior.get("obs_var", DEFAULT_PRIOR["obs_var"])
+        if self.marginalise_obs_var:
+            obs_df = 2 * prior_obs_var["concentration"]
+            obs_var = prior_obs_var["rate"] / prior_obs_var["concentration"]
+
+            # StudentT is the result of marginalisation of σ~Γ^{-1} and obs~N(..., σ)
+            _likelihood_closure = lambda mu: dist.StudentT(
+                obs_df, mu, jnp.sqrt(obs_var)
+            )
+        else:
+            obs_var = numpyro.sample("obs_var", dist.InverseGamma(**prior_obs_var))
+            _likelihood_closure = lambda mu: dist.Normal(mu, jnp.sqrt(obs_var))
+
+        _latent_prior = self.prior.get("_mms_msa", DEFAULT_PRIOR["_mms_msa"])
+        rho_tril = numpyro.sample(
+            "_mms_msa_rho_tril",
+            dist.LKJCholesky(2, **DEFAULT_PRIOR["_mms_msa_rho_tril"]),
+        )
+        cov_tril = _latent_prior["scale"][..., None] * rho_tril
+        # Sample only within the FG
+        with numpyro.plate("voxel_fg", self.mask_fg_size):
+            _latent = numpyro.sample(
+                "_mms_msa",
+                dist.MultivariateNormal(_latent_prior["loc"], scale_tril=cov_tril),
+            )
+
+        # Attribute the sampled vectors of values to their respective maps
+        msa = jnp.zeros(self.grid_shape).at[self.mask_fg].set(_latent[..., 1])
+        # I am free to choose the reference mean susceptibility -> mean over the FG!
+        mms = (
+            jnp.zeros(self.grid_shape)
+            .at[self.mask_fg]
+            .set(_latent[..., 0] - _latent[..., 0].mean())
+        )
+
+        with numpyro.plate_stack("spatial", self.grid_shape):
+            # it's nice to have the correctly shaped and referenced samples available
+            # out of the box but I want to be able to run MCMC when it gets tight
+            if self.store_deterministic_sites:
+                numpyro.deterministic("mms", mms)
+                numpyro.deterministic("msa", msa)
+
+            with numpyro.plate("orient", self.norient):
+                obs_loc = numpyro.deterministic(
+                    "field",
+                    # NOTE: I wonder if using MMS and not chi_perp adds to the collinearity of the problem
+                    # I mean to say, I wonder if chi_perp and MSA would be easier to sampler
+                    # from than MMS and MSA
+                    simulate_field_from_csst(self.b_dir, self.v1, mms, msa),
+                )
+
+                # Mask to avoid trying to fit the field outside of the (object unless desired)
+                # see the docstring of `_mask_obs`
+                with handlers.mask(mask=self.mask_obs):
+                    numpyro.sample("obs", _likelihood_closure(obs_loc), obs=self.obs)
