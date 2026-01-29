@@ -20,7 +20,7 @@ DEFAULT_PRIOR = {
 }
 
 
-class ModelUnpooledUnconstrainedMSA:
+class ModelUnpooled:
     def __init__(
         self,
         b_dir: Float[Array, "orient ndim"],
@@ -29,6 +29,7 @@ class ModelUnpooledUnconstrainedMSA:
         obs: Float[Array, "orient *spatial"] | None = None,
         store_deterministic_sites: bool = True,
         marginalise_obs_var: bool = True,
+        msa_constr_fn=None,
     ):
         """Simplest CSST model.
 
@@ -111,6 +112,7 @@ class ModelUnpooledUnconstrainedMSA:
         # orientations)
         self.mask_fg = jnp.any(self.mask_obs, axis=0)  # rely on mask_obs.ndim = 1+ndim
         self.mask_fg_size: int = self.mask_fg.sum().item()
+        self.msa_constr_fn = msa_constr_fn
 
     def __call__(self):
         """Simplest CSST model.
@@ -156,7 +158,11 @@ class ModelUnpooledUnconstrainedMSA:
             )
 
         # Attribute the sampled vectors of values to their respective maps
-        msa = jnp.zeros(self.grid_shape).at[self.mask_wm].set(_msa)
+        msa = (
+            jnp.zeros(self.grid_shape)
+            .at[self.mask_wm]
+            .set(_msa if self.msa_constr_fn is None else self.msa_constr_fn(_msa))
+        )
         # I am free to choose the reference mean susceptibility -> mean over the FG!
         mms = jnp.zeros(self.grid_shape).at[self.mask_fg].set(_mms - _mms.mean())
 
@@ -182,7 +188,7 @@ class ModelUnpooledUnconstrainedMSA:
                     numpyro.sample("obs", _likelihood_closure(obs_loc), obs=self.obs)
 
 
-class ModelPooledUnconstrainedMSA(ModelUnpooledUnconstrainedMSA):
+class ModelPooled(ModelUnpooled):
     def __init__(
         self,
         b_dir: Float[Array, "orient ndim"],
@@ -192,6 +198,7 @@ class ModelPooledUnconstrainedMSA(ModelUnpooledUnconstrainedMSA):
         obs: Float[Array, "orient *spatial"] | None = None,
         store_deterministic_sites: bool = True,
         marginalise_obs_var: bool = True,
+        msa_constr_fn=None,
     ):
         super().__init__(
             b_dir=b_dir,
@@ -200,6 +207,7 @@ class ModelPooledUnconstrainedMSA(ModelUnpooledUnconstrainedMSA):
             obs=obs,
             store_deterministic_sites=store_deterministic_sites,
             marginalise_obs_var=marginalise_obs_var,
+            msa_constr_fn=msa_constr_fn,
         )
         assert roi.shape == self.grid_shape, f"{roi.shape=}!={self.grid_shape=}"
         self.roi = roi
@@ -309,6 +317,8 @@ class ModelPooledUnconstrainedMSA(ModelUnpooledUnconstrainedMSA):
         msa = msa_loc.at[self.labels_non_msa].set(0.0)[self.roi] + jnp.sqrt(msa_var).at[
             self.labels_non_msa
         ].set(0.0)[self.roi] * jnp.zeros(self.grid_shape).at[self.mask_wm].set(_msa_eps)
+        if self.msa_constr_fn is not None:
+            msa = jnp.where(self.mask_wm, self.msa_constr_fn(msa), 0.0)
 
         # The rest is the same as in the parent class
         with numpyro.plate_stack("spatial", self.grid_shape):
@@ -333,7 +343,7 @@ class ModelPooledUnconstrainedMSA(ModelUnpooledUnconstrainedMSA):
                     numpyro.sample("obs", _likelihood_closure(obs_loc), obs=self.obs)
 
 
-class ModelUnpooledMvNUnconstrainedMSA(ModelUnpooledUnconstrainedMSA):
+class ModelUnpooledMvNUnconstrainedMSA(ModelUnpooled):
     def __init__(
         self,
         b_dir: Float[Array, "orient ndim"],
